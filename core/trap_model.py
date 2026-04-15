@@ -62,15 +62,20 @@ class TrapModel:
         k = 2 * np.pi / lam
         u0_hz = 4 * alpha_hz * power / (np.pi * eps0 * c * w0**2)
         u0_j  = h * u0_hz
-        u_abs = abs(u0_j)
 
-        omega_ax  = np.sqrt(2 * u_abs * k**2 / self.m_atom)
-        omega_rad = np.sqrt(4 * u_abs / (self.m_atom * w0**2))
+        if u0_j > 0:
+            omega_ax  = np.sqrt(2 * u0_j * k**2 / self.m_atom)
+            omega_rad = np.sqrt(4 * u0_j / (self.m_atom * w0**2))
+            f_ax  = omega_ax  / (2 * np.pi) * 1e-3
+            f_rad = omega_rad / (2 * np.pi) * 1e-3
+        else:
+            f_ax  = float("nan")
+            f_rad = float("nan")
 
         return {
             "U0_uK":       u0_j / kB * 1e6,
-            "f_axial_kHz": omega_ax  / (2 * np.pi) * 1e-3,
-            "f_radial_kHz":omega_rad / (2 * np.pi) * 1e-3,
+            "f_axial_kHz": f_ax,
+            "f_radial_kHz":f_rad,
         }
 
     def lattice_scatter_rate(self, lam: float, w0: float, power: float,
@@ -94,16 +99,21 @@ class TrapModel:
         """
         u0_hz = alpha_hz * power / (np.pi * eps0 * c * w0**2)
         u0_j  = h * u0_hz
-        u_abs = abs(u0_j)
         z_r   = np.pi * w0**2 / lam
 
-        omega_rad = np.sqrt(4 * u_abs / (self.m_atom * w0**2))
-        omega_ax  = np.sqrt(2 * u_abs / (self.m_atom * z_r**2))
+        if u0_j > 0:
+            omega_rad = np.sqrt(4 * u0_j / (self.m_atom * w0**2))
+            omega_ax  = np.sqrt(2 * u0_j / (self.m_atom * z_r**2))
+            f_rad = omega_rad / (2 * np.pi) * 1e-3
+            f_ax  = omega_ax  / (2 * np.pi) * 1e-3
+        else:
+            f_rad = float("nan")
+            f_ax  = float("nan")
 
         return {
             "U0_uK":        u0_j / kB * 1e6,
-            "f_radial_kHz": omega_rad / (2 * np.pi) * 1e-3,
-            "f_axial_kHz":  omega_ax  / (2 * np.pi) * 1e-3,
+            "f_radial_kHz": f_rad,
+            "f_axial_kHz":  f_ax,
             "zR_mm":        z_r * 1e3,
         }
 
