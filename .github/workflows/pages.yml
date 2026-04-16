@@ -61,14 +61,25 @@ jobs:
           cavity_result = run_calculator("cavity-mode", cavity_schema["default_state"])
           assert cavity_result["ok"], cavity_result
           assert cavity_result["plot"]["segments"], cavity_result["plot"]
+          assert cavity_result["plot_metrics"], cavity_result
 
           beam_schema = get_calculator_schema("gaussian-beam")
           beam_result = run_calculator("gaussian-beam", beam_schema["default_state"])
           assert beam_result["ok"], beam_result
           assert beam_result["plot"]["traces"], beam_result["plot"]
+          assert beam_result["summary_cards"], beam_result
 
-          print("cavity waist:", cavity_result["summary_cards"][0]["value"])
-          print("gaussian waist:", beam_result["summary_cards"][0]["value"])
+          cavity_finesse = next(
+              (metric["value"] for metric in cavity_result["plot_metrics"] if metric["label"] == "Finesse"),
+              "n/a",
+          )
+          gaussian_waist = next(
+              (card["value"] for card in beam_result["summary_cards"] if card["label"] == "Waist radius"),
+              "n/a",
+          )
+
+          print("cavity finesse:", cavity_finesse)
+          print("gaussian waist:", gaussian_waist)
           PY
 
       - name: Build Pages artifact
