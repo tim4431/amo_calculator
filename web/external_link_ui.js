@@ -1,7 +1,12 @@
+// External-links tab. Fully frontend-owned — no Pyodide calls. Demonstrates
+// the "no graphical window" case: the tab module declares its own schema and
+// default state, and its mount() hook builds a content panel with cards.
+
 import { element } from "./ui_common.js";
+import { createContentPanel, createMessagesPanel, collectStandardMessages } from "./panels.js";
 
 
-const EXTERNAL_LINK_OPTIONS = [
+const DEFAULT_LINK_OPTIONS = [
   {
     id: "marimo",
     label: "Marimo",
@@ -28,6 +33,7 @@ const EXTERNAL_LINK_OPTIONS = [
   },
 ];
 
+
 function normalizeLinkOptions(linkOptions = []) {
   return linkOptions
     .filter((option) => option && typeof option.url === "string" && option.url)
@@ -39,125 +45,94 @@ function normalizeLinkOptions(linkOptions = []) {
     }));
 }
 
-export function createExternalLinksTabDefinition() {
-  const linkOptions = normalizeLinkOptions(EXTERNAL_LINK_OPTIONS);
-  const defaultState = {};
 
-  return {
+function renderLinkCards(body, intro, linkOptions) {
+  const cards = linkOptions.map((option) =>
+    element("a", {
+      className: "external-link-card",
+      attrs: { href: option.url, target: "_blank", rel: "noreferrer" },
+      children: [
+        element("p", { className: "external-link-card-title", text: option.label }),
+        element("p", {
+          className: "external-link-card-description",
+          text: option.description || `Open ${option.url} in a new tab.`,
+        }),
+        element("p", { className: "external-link-card-url", text: option.url }),
+      ],
+    }),
+  );
+
+  const panel = element("div", {
+    className: "external-link-panel",
+    children: [
+      element("p", { className: "panel-copy external-link-intro", text: intro }),
+      cards.length
+        ? element("div", { className: "external-link-grid", children: cards })
+        : element("p", {
+            className: "empty-state",
+            text: "No external links are configured yet.",
+          }),
+    ],
+  });
+
+  body.replaceChildren(panel);
+}
+
+
+export function createExternalLinkTab() {
+  const linkOptions = normalizeLinkOptions(DEFAULT_LINK_OPTIONS);
+  const frontend = {
     manifest: {
       id: "link",
       title: "Link",
       description: "Open hosted tools and external resources from one place.",
       layout: "external_link",
-      frontend_only: true,
     },
     schema: {
       id: "link",
       title: "Link",
       description: "Open hosted tools and external resources from one place.",
       layout: "external_link",
-      default_state: defaultState,
+      default_state: {},
       link_options: linkOptions,
     },
-    initial_state: defaultState,
-    initial_result: {
+    defaultState: {},
+    initialResult: {
       ok: true,
       error: null,
       warnings: linkOptions.length ? [] : ["No external links are configured."],
-      normalized_state: defaultState,
+      normalized_state: {},
       summary_cards: [],
       plot_metrics: [],
-      plot: {
-        link_options: linkOptions,
-      },
+      plot: {},
       scene: {},
     },
   };
-}
 
+  function mount(workspace) {
+    const content = createContentPanel({ className: "panel" });
+    const messages = createMessagesPanel();
 
-export function createExternalLinkUi() {
-  return {
-    matches({ schema }) {
-      return schema?.layout === "external_link";
-    },
+    workspace.append(content.node, messages.node);
 
-    getShellConfig({ calculator }) {
-      return {
-        showHero: false,
-        plotSectionTitle: calculator?.title || "Links",
-        builderHint: "Click a card to open an external resource in a new tab.",
-        successHint: "Click a card to open an external resource in a new tab.",
-        showBuilder: false,
-      };
-    },
-
-    clearTransientState() {},
-
-    syncState() {},
-
-    renderBuilder({ builderToolbar, builderContainer }) {
-      builderToolbar.replaceChildren();
-      builderToolbar.style.display = "none";
-      builderContainer.replaceChildren();
-    },
-
-    renderPlot({ plotHost, readoutHost, calculator, schema, result }) {
-      const linkOptions = normalizeLinkOptions(schema?.link_options || result?.plot?.link_options || []);
-
-      if (typeof Plotly?.purge === "function") {
-        Plotly.purge(plotHost);
-      }
-
-      readoutHost.replaceChildren();
-      readoutHost.style.display = "none";
-      plotHost.style.minHeight = "0";
-
-      const cards = linkOptions.map((option) =>
-        element("a", {
-          className: "external-link-card",
-          attrs: {
-            href: option.url,
-            target: "_blank",
-            rel: "noreferrer",
-          },
-          children: [
-            element("p", {
-              className: "external-link-card-title",
-              text: option.label,
-            }),
-            element("p", {
-              className: "external-link-card-description",
-              text: option.description || `Open ${option.url} in a new tab.`,
-            }),
-            element("p", {
-              className: "external-link-card-url",
-              text: option.url,
-            }),
-          ],
-        })
+    function update(ctx) {
+      const options = normalizeLinkOptions(
+        ctx.schema?.link_options || frontend.schema.link_options || [],
       );
+      const intro =
+        ctx.calculator?.description ||
+        frontend.manifest.description ||
+        "Open hosted tools and external resources from one place.";
+      renderLinkCards(content.body, intro, options);
+      messages.setMessages(collectStandardMessages(ctx.result));
+    }
 
-      plotHost.replaceChildren(
-        element("div", {
-          className: "external-link-panel",
-          children: [
-            element("p", {
-              className: "panel-copy external-link-intro",
-              text: calculator?.description || "Open hosted tools and external resources from one place.",
-            }),
-            cards.length
-              ? element("div", {
-                  className: "external-link-grid",
-                  children: cards,
-                })
-              : element("p", {
-                  className: "empty-state",
-                  text: "No external links are configured yet.",
-                }),
-          ],
-        }),
-      );
-    },
-  };
+    function unmount() {
+      workspace.replaceChildren();
+    }
+
+    return { update, unmount };
+  }
+
+  return { frontend, mount };
 }

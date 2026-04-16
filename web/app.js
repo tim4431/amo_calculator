@@ -1,80 +1,46 @@
-import {
-  deepCopy,
-  element,
-  getValueByPath,
-  renderField,
-  setValueByPath,
-} from "./ui_common.js";
-import { createCalculatorUiRegistry } from "./calculator_ui_registry.js";
-import { createExternalLinksTabDefinition } from "./external_link_ui.js";
+// Application shell.
+//
+// The shell owns only the topbar, the tab nav, and the blank `<main>`
+// workspace. It knows nothing about what a calculator renders — each tab
+// module is handed the workspace element and mounts whatever panels it
+// needs (see web/panels.js for reusable panel factories).
+//
+// Lifecycle per active tab:
+//   factory -> tabModule       created once per tab, kept in memory
+//   mount(workspace, services) called on tab activation, returns instance
+//   instance.update(ctx)       called after each state/result change
+//   instance.unmount()         called before switching away from the tab
+
+import { deepCopy, element, setValueByPath } from "./ui_common.js";
+import { TAB_REGISTRY, defaultTabId } from "./tabs.js";
 
 const PYODIDE_INDEX_URL = "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/";
-
-
-async function fetchPythonManifest() {
-  const response = await fetch("python_manifest.json");
-  if (!response.ok) {
-    throw new Error(`Failed to fetch python_manifest.json: ${response.status}`);
-  }
-  return response.json();
-}
+const COMPUTE_DEBOUNCE_MS = 160;
 
 
 const appState = {
   pyodide: null,
+  pyodideReady: null,
   pythonManifest: null,
   loadedPythonFiles: new Set(),
-  calculators: [],
+  // Per-tab registry entries keyed by id.
+  tabs: new Map(),
+  // Per-tab materialized factory output (createTab()).
+  tabModules: new Map(),
+  // Per-tab schemas, states, results.
   schemas: new Map(),
   states: new Map(),
   results: new Map(),
-  activeCalculatorId: null,
+  activeTabId: null,
+  activeInstance: null,
   computeTimer: null,
 };
 
 const dom = {
   runtimeStatus: document.getElementById("runtime-status"),
   tabs: document.getElementById("tabs"),
-  heroPanel: document.getElementById("hero-panel"),
-  calculatorHeroCopy: document.getElementById("calculator-hero-copy"),
-  calculatorTitle: document.getElementById("calculator-title"),
-  calculatorDescription: document.getElementById("calculator-description"),
-  globalControls: document.getElementById("global-controls"),
-  summary: document.getElementById("summary"),
-  builderPanel: document.getElementById("builder-panel"),
-  builderToolbar: document.getElementById("builder-toolbar"),
-  builder: document.getElementById("builder"),
-  builderHint: document.getElementById("builder-hint"),
-  plot: document.getElementById("plot"),
-  plotSectionTitle: document.getElementById("plot-section-title"),
-  plotReadout: document.getElementById("plot-readout"),
-  plotMetrics: document.getElementById("plot-metrics"),
-  messages: document.getElementById("messages"),
+  workspace: document.getElementById("workspace"),
 };
-
-const FRONTEND_CALCULATORS = [
-  createExternalLinksTabDefinition(),
-];
-
-
-function getActiveCalculator() {
-  return appState.calculators.find((calculator) => calculator.id === appState.activeCalculatorId) || null;
-}
-
-
-function getActiveSchema() {
-  return appState.schemas.get(appState.activeCalculatorId) || null;
-}
-
-
-function getActiveState() {
-  return appState.states.get(appState.activeCalculatorId) || null;
-}
-
-
-function getActiveResult() {
-  return appState.results.get(appState.activeCalculatorId) || null;
-}
 
 
 function setStatus(message, kind = "") {
@@ -83,61 +49,107 @@ function setStatus(message, kind = "") {
 }
 
 
-function commitState(nextState, { rerender = true, recompute = true } = {}) {
-  appState.states.set(appState.activeCalculatorId, nextState);
-  if (rerender) {
-    renderApp();
-  }
-  if (recompute) {
-    scheduleCompute();
-  }
+function tabEntry(tabId) {
+  return appState.tabs.get(tabId) || null;
 }
 
 
-function updateGlobalField(path, value) {
-  const nextState = deepCopy(getActiveState());
-  setValueByPath(nextState, path, value);
-  commitState(nextState);
+function isPythonTab(tabId) {
+  return tabEntry(tabId)?.source === "python";
 }
 
 
-const uiRegistry = createCalculatorUiRegistry({
-  getState: getActiveState,
-  getSchema: getActiveSchema,
-  onCommit: (nextState, options) => commitState(nextState, options),
-  onUpdateGlobal: updateGlobalField,
-  onRerender: renderApp,
-});
+function tabModule(tabId) {
+  let module = appState.tabModules.get(tabId);
+  if (!module) {
+    const entry = tabEntry(tabId);
+    if (!entry) return null;
+    module = entry.createTab({ id: entry.id, title: entry.title });
+    appState.tabModules.set(tabId, module);
+  }
+  return module;
+}
 
 
-function getActiveUi() {
-  return uiRegistry.resolve({
-    calculator: getActiveCalculator(),
-    schema: getActiveSchema(),
-  });
+function servicesFor(tabId) {
+  return {
+    getCalculator: () => buildCalculatorManifest(tabId),
+    getSchema: () => appState.schemas.get(tabId) || null,
+    getState: () => appState.states.get(tabId) || null,
+    getResult: () => appState.results.get(tabId) || null,
+    commitState: (nextState, options = {}) => {
+      appState.states.set(tabId, nextState);
+      if (options.rerender !== false) {
+        renderActive();
+      }
+      if (options.recompute !== false && isPythonTab(tabId)) {
+        scheduleCompute();
+      }
+    },
+    updateGlobal: (path, value) => {
+      const current = appState.states.get(tabId);
+      const next = current ? deepCopy(current) : {};
+      setValueByPath(next, path, value);
+      appState.states.set(tabId, next);
+      renderActive();
+      if (isPythonTab(tabId)) scheduleCompute();
+    },
+    rerender: renderActive,
+  };
+}
+
+
+function buildCalculatorManifest(tabId) {
+  const entry = tabEntry(tabId);
+  if (!entry) return null;
+  const schema = appState.schemas.get(tabId);
+  return {
+    id: tabId,
+    title: schema?.title || entry.title,
+    description: schema?.description || "",
+    layout: schema?.layout || "",
+    source: entry.source,
+  };
 }
 
 
 function scheduleCompute() {
   clearTimeout(appState.computeTimer);
   appState.computeTimer = window.setTimeout(() => {
-    void recomputeActiveCalculator();
-  }, 160);
+    void recomputeActiveTab();
+  }, COMPUTE_DEBOUNCE_MS);
 }
 
 
-function showMessages(messages) {
-  dom.messages.replaceChildren(...messages);
+async function fetchPythonManifest() {
+  const response = await fetch("python_manifest.json", { cache: "reload" });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch python_manifest.json: ${response.status}`);
+  }
+  return response.json();
+}
+
+
+function ensureDirectory(pyodide, directoryPath) {
+  if (!directoryPath) return;
+  const parts = directoryPath.split("/").filter(Boolean);
+  let current = "";
+  for (const part of parts) {
+    current = `${current}/${part}`;
+    try {
+      pyodide.FS.mkdir(current);
+    } catch (_error) {
+      // Directory already exists.
+    }
+  }
 }
 
 
 async function loadPythonFiles(pyodide, pythonFiles) {
   for (const relativePath of pythonFiles) {
-    if (appState.loadedPythonFiles.has(relativePath)) {
-      continue;
-    }
+    if (appState.loadedPythonFiles.has(relativePath)) continue;
     setStatus(`Loading ${relativePath}...`, "busy");
-    const response = await fetch(relativePath);
+    const response = await fetch(relativePath, { cache: "reload" });
     if (!response.ok) {
       throw new Error(`Failed to fetch ${relativePath}: ${response.status}`);
     }
@@ -150,25 +162,6 @@ async function loadPythonFiles(pyodide, pythonFiles) {
 }
 
 
-function pythonFilesForCalculator(calculatorId) {
-  return appState.pythonManifest?.calculator_python_files?.[calculatorId] || [];
-}
-
-
-async function ensureCalculatorLoaded(calculatorId) {
-  if (!calculatorId || appState.schemas.has(calculatorId)) {
-    return;
-  }
-
-  await loadPythonFiles(appState.pyodide, pythonFilesForCalculator(calculatorId));
-  const schema = pyodideCallGetSchema(calculatorId);
-  appState.schemas.set(calculatorId, schema);
-  if (!appState.states.has(calculatorId)) {
-    appState.states.set(calculatorId, deepCopy(schema.default_state));
-  }
-}
-
-
 async function loadPyodideRuntime() {
   setStatus("Loading Pyodide...", "busy");
   const pyodide = await loadPyodide({ indexURL: PYODIDE_INDEX_URL });
@@ -176,7 +169,10 @@ async function loadPyodideRuntime() {
   await pyodide.loadPackage(["numpy", "scipy"]);
 
   appState.pythonManifest = await fetchPythonManifest();
-  const commonPythonFiles = appState.pythonManifest.common_python_files || appState.pythonManifest.python_files || [];
+  const commonPythonFiles =
+    appState.pythonManifest.common_python_files ||
+    appState.pythonManifest.python_files ||
+    [];
   await loadPythonFiles(pyodide, commonPythonFiles);
 
   pyodide.runPython(`
@@ -188,32 +184,12 @@ sys.path.insert(0, "/")
 }
 
 
-function ensureDirectory(pyodide, directoryPath) {
-  if (!directoryPath) {
-    return;
-  }
-  const parts = directoryPath.split("/").filter(Boolean);
-  let current = "";
-  for (const part of parts) {
-    current = `${current}/${part}`;
-    try {
-      pyodide.FS.mkdir(current);
-    } catch (_error) {
-      // Directory already exists in the virtual filesystem.
-    }
-  }
+function pythonFilesForCalculator(calculatorId) {
+  return appState.pythonManifest?.calculator_python_files?.[calculatorId] || [];
 }
 
 
-function pyodideCallListCalculators() {
-  return JSON.parse(appState.pyodide.runPython(`
-from app.registry import list_calculators_json
-list_calculators_json()
-`));
-}
-
-
-function pyodideCallGetSchema(calculatorId) {
+function pyodideGetSchema(calculatorId) {
   appState.pyodide.globals.set("_bridge_calculator_id", calculatorId);
   const output = appState.pyodide.runPython(`
 from app.registry import get_calculator_schema_json
@@ -224,7 +200,7 @@ get_calculator_schema_json(_bridge_calculator_id)
 }
 
 
-function pyodideCallRunCalculator(calculatorId, calculatorState) {
+function pyodideRunCalculator(calculatorId, calculatorState) {
   appState.pyodide.globals.set("_bridge_calculator_id", calculatorId);
   appState.pyodide.globals.set("_bridge_state_json", JSON.stringify(calculatorState));
   const output = appState.pyodide.runPython(`
@@ -237,16 +213,187 @@ run_calculator_json(_bridge_calculator_id, _bridge_state_json)
 }
 
 
-function registerFrontendCalculators() {
-  for (const definition of FRONTEND_CALCULATORS) {
-    appState.calculators.push(deepCopy(definition.manifest));
-    appState.schemas.set(definition.manifest.id, deepCopy(definition.schema));
-    appState.states.set(
-      definition.manifest.id,
-      deepCopy(definition.initial_state ?? definition.schema.default_state ?? {}),
-    );
-    if (definition.initial_result) {
-      appState.results.set(definition.manifest.id, deepCopy(definition.initial_result));
+async function ensurePythonTabReady(tabId) {
+  if (!isPythonTab(tabId)) return;
+  if (appState.schemas.has(tabId)) return;
+
+  if (!appState.pyodide) {
+    await appState.pyodideReady;
+  }
+  await loadPythonFiles(appState.pyodide, pythonFilesForCalculator(tabId));
+  const schema = pyodideGetSchema(tabId);
+  appState.schemas.set(tabId, schema);
+  if (!appState.states.has(tabId)) {
+    appState.states.set(tabId, deepCopy(schema.default_state || {}));
+  }
+}
+
+
+function ensureFrontendTabReady(tabId) {
+  if (appState.schemas.has(tabId)) return;
+  const module = tabModule(tabId);
+  const frontend = module?.frontend;
+  if (!frontend) return;
+  appState.schemas.set(tabId, deepCopy(frontend.schema || {}));
+  appState.states.set(tabId, deepCopy(frontend.defaultState || {}));
+  if (frontend.initialResult) {
+    appState.results.set(tabId, deepCopy(frontend.initialResult));
+  }
+}
+
+
+async function recomputeActiveTab() {
+  const tabId = appState.activeTabId;
+  if (!tabId || !isPythonTab(tabId)) {
+    setStatus("Python runtime ready");
+    return;
+  }
+  if (!appState.pyodide) {
+    await appState.pyodideReady;
+  }
+  await ensurePythonTabReady(tabId);
+  setStatus("Running calculator...", "busy");
+  try {
+    const result = pyodideRunCalculator(tabId, appState.states.get(tabId) || {});
+    appState.results.set(tabId, result);
+    if (result.normalized_state) {
+      appState.states.set(tabId, result.normalized_state);
+    }
+    renderActive();
+    setStatus("Python runtime ready");
+  } catch (error) {
+    console.error(error);
+    appState.results.set(tabId, {
+      ok: false,
+      error: error.message,
+      warnings: [],
+      summary_cards: [],
+      plot_metrics: [],
+      plot: {},
+      scene: {},
+    });
+    renderActive();
+    setStatus("Runtime error", "error");
+  }
+}
+
+
+function renderTabs() {
+  const nodes = [];
+  for (const [id, entry] of appState.tabs) {
+    const schema = appState.schemas.get(id);
+    const label = schema?.title || entry.title;
+    const button = element("button", {
+      className: `tab${id === appState.activeTabId ? " active" : ""}`,
+      text: label,
+      attrs: { type: "button" },
+    });
+    button.addEventListener("click", () => {
+      void switchToTab(id);
+    });
+    nodes.push(button);
+  }
+  dom.tabs.replaceChildren(...nodes);
+}
+
+
+function currentContext() {
+  const tabId = appState.activeTabId;
+  if (!tabId) return null;
+  return {
+    calculator: buildCalculatorManifest(tabId),
+    schema: appState.schemas.get(tabId) || null,
+    state: appState.states.get(tabId) || null,
+    result: appState.results.get(tabId) || null,
+  };
+}
+
+
+function renderActive() {
+  renderTabs();
+  if (!appState.activeInstance) return;
+  const ctx = currentContext();
+  if (!ctx) return;
+  appState.activeInstance.update(ctx);
+}
+
+
+function teardownActiveInstance() {
+  if (appState.activeInstance) {
+    try {
+      appState.activeInstance.unmount?.();
+    } catch (error) {
+      console.error("Error tearing down tab:", error);
+    }
+    appState.activeInstance = null;
+  }
+  dom.workspace.replaceChildren();
+}
+
+
+async function switchToTab(tabId) {
+  if (!tabId || tabId === appState.activeTabId) return;
+
+  teardownActiveInstance();
+  appState.activeTabId = tabId;
+  renderTabs();
+
+  const entry = tabEntry(tabId);
+  if (!entry) return;
+
+  if (entry.source === "frontend") {
+    ensureFrontendTabReady(tabId);
+  } else {
+    try {
+      await ensurePythonTabReady(tabId);
+    } catch (error) {
+      console.error(error);
+      setStatus("Runtime failed", "error");
+      mountErrorPlaceholder(`Failed to load ${entry.title}: ${error.message}`);
+      return;
+    }
+  }
+
+  mountActiveTab();
+
+  if (entry.source === "python" && !appState.results.has(tabId)) {
+    await recomputeActiveTab();
+  } else {
+    setStatus("Python runtime ready");
+  }
+}
+
+
+function mountActiveTab() {
+  const tabId = appState.activeTabId;
+  const module = tabModule(tabId);
+  if (!module) return;
+  const services = servicesFor(tabId);
+  const instance = module.mount(dom.workspace, services);
+  appState.activeInstance = instance;
+  const ctx = currentContext();
+  if (ctx) instance.update(ctx);
+}
+
+
+function mountErrorPlaceholder(message) {
+  dom.workspace.replaceChildren(
+    element("section", {
+      className: "panel",
+      children: [element("div", { className: "message error", text: message })],
+    }),
+  );
+}
+
+
+function registerTabs() {
+  for (const entry of TAB_REGISTRY) {
+    appState.tabs.set(entry.id, entry);
+    // Materialize the factory up front so frontend-only tabs can contribute
+    // their manifest/schema before Pyodide finishes loading.
+    tabModule(entry.id);
+    if (entry.source === "frontend") {
+      ensureFrontendTabReady(entry.id);
     }
   }
 }
@@ -254,267 +401,36 @@ function registerFrontendCalculators() {
 
 async function initializeApplication() {
   try {
-    await loadPyodideRuntime();
-    appState.calculators = pyodideCallListCalculators();
-    registerFrontendCalculators();
-    const defaultCalculator = appState.calculators[0] || null;
-    appState.activeCalculatorId = defaultCalculator ? defaultCalculator.id : null;
-    await ensureCalculatorLoaded(appState.activeCalculatorId);
-    uiRegistry.clearTransientState();
-    renderApp();
-    if (appState.activeCalculatorId && !defaultCalculator?.frontend_only) {
-      await recomputeActiveCalculator();
+    registerTabs();
+
+    appState.pyodideReady = loadPyodideRuntime().catch((error) => {
+      console.error(error);
+      setStatus("Runtime failed", "error");
+      throw error;
+    });
+
+    const startId = defaultTabId();
+    if (startId && tabEntry(startId)?.source === "frontend") {
+      // Render the frontend-only default tab immediately — no need to wait
+      // for Pyodide.
+      await switchToTab(startId);
+    }
+
+    await appState.pyodideReady;
+
+    // Once Pyodide is ready, render or recompute as needed.
+    if (!appState.activeTabId && startId) {
+      await switchToTab(startId);
+    } else if (appState.activeTabId && isPythonTab(appState.activeTabId)) {
+      await recomputeActiveTab();
     }
   } catch (error) {
     console.error(error);
     setStatus("Runtime failed", "error");
-    showMessages([
-      element("div", {
-        className: "message error",
-        text: `Failed to initialize the browser-side Python runtime: ${error.message}`,
-      }),
-    ]);
-  }
-}
-
-
-async function recomputeActiveCalculator() {
-  const calculatorId = appState.activeCalculatorId;
-  const calculator = getActiveCalculator();
-  if (!calculatorId || !appState.pyodide || calculator?.frontend_only) {
-    setStatus("Python runtime ready");
-    return;
-  }
-  await ensureCalculatorLoaded(calculatorId);
-  setStatus("Running calculator...", "busy");
-  try {
-    const result = pyodideCallRunCalculator(calculatorId, getActiveState());
-    appState.results.set(calculatorId, result);
-    if (result.normalized_state) {
-      appState.states.set(calculatorId, result.normalized_state);
-    }
-    getActiveUi().syncState?.();
-    renderApp();
-    setStatus("Python runtime ready");
-  } catch (error) {
-    console.error(error);
-    appState.results.set(calculatorId, {
-      ok: false,
-      error: error.message,
-      warnings: [],
-      summary_cards: [],
-      plot_metrics: [],
-      plot: { traces: [], segments: [], elements: [], waist_marker: null, y_max_um: 200 },
-      scene: { elements: [], gaps: [], environments: [], total_length_mm: 0 },
-    });
-    getActiveUi().clearTransientState?.();
-    renderApp();
-    setStatus("Runtime error", "error");
-  }
-}
-
-
-function renderTabs() {
-  const nodes = appState.calculators.map((calculator) => {
-    const button = element("button", {
-      className: `tab${calculator.id === appState.activeCalculatorId ? " active" : ""}`,
-      text: calculator.title,
-      attrs: { type: "button" },
-    });
-    button.addEventListener("click", async () => {
-      if (calculator.id === appState.activeCalculatorId) {
-        return;
-      }
-      uiRegistry.clearTransientState();
-      appState.activeCalculatorId = calculator.id;
-      await ensureCalculatorLoaded(calculator.id);
-      renderApp();
-      if (!appState.results.has(calculator.id)) {
-        await recomputeActiveCalculator();
-      } else {
-        setStatus("Python runtime ready");
-      }
-    });
-    return button;
-  });
-  dom.tabs.replaceChildren(...nodes);
-}
-
-
-function renderGlobalControls() {
-  const schema = getActiveSchema();
-  const calculatorState = getActiveState();
-  if (!schema || !calculatorState) {
-    dom.globalControls.replaceChildren();
-    return;
-  }
-
-  const nodes = (schema.global_fields || []).map((field) =>
-    renderField(
-      field,
-      getValueByPath(calculatorState, field.path),
-      (nextValue) => updateGlobalField(field.path, nextValue),
-      calculatorState,
-    )
-  );
-  dom.globalControls.replaceChildren(...nodes);
-}
-
-
-function renderSummary() {
-  const result = getActiveResult();
-  if (!result || !(result.summary_cards || []).length) {
-    dom.summary.replaceChildren(
-      element("p", {
-        className: "empty-state",
-        text: "Run a calculator to populate summary values.",
-      }),
+    mountErrorPlaceholder(
+      `Failed to initialize the browser-side Python runtime: ${error.message}`,
     );
-    return;
   }
-
-  const cards = result.summary_cards.map((card) =>
-    element("div", {
-      className: "summary-card",
-      children: [
-        element("p", { className: "summary-label", text: card.label }),
-        element("p", { className: "summary-value", text: card.value }),
-      ],
-    })
-  );
-  dom.summary.replaceChildren(...cards);
-}
-
-
-function renderPlotMetrics() {
-  const result = getActiveResult();
-  const metrics = (result && result.plot_metrics) || [];
-  if (!metrics.length) {
-    dom.plotMetrics.replaceChildren();
-    dom.plotMetrics.style.display = "none";
-    return;
-  }
-
-  const cards = metrics.map((card) =>
-    element("div", {
-      className: "summary-card plot-metric-card",
-      children: [
-        element("p", { className: "summary-label", text: card.label }),
-        element("p", { className: "summary-value", text: card.value }),
-      ],
-    })
-  );
-  dom.plotMetrics.replaceChildren(...cards);
-  dom.plotMetrics.style.display = "";
-}
-
-
-function renderMessages() {
-  const calculator = getActiveCalculator();
-  const schema = getActiveSchema();
-  const result = getActiveResult();
-  const ui = getActiveUi();
-  const shellConfig = calculator && schema
-    ? ui.getShellConfig({ calculator, result, schema })
-    : null;
-  const messages = [];
-
-  if (!result) {
-    messages.push(element("div", {
-      className: "message info",
-      text: "The calculator will run after the Python runtime finishes loading.",
-    }));
-  } else {
-    if (result.error) {
-      messages.push(element("div", {
-        className: "message error",
-        text: result.error,
-      }));
-    }
-    for (const warning of result.warnings || []) {
-      messages.push(element("div", {
-        className: "message warning",
-        text: warning,
-      }));
-    }
-    if (result.ok && shellConfig) {
-      messages.push(element("div", {
-        className: "message info",
-        text: shellConfig.successHint,
-      }));
-    }
-  }
-
-  if (!messages.length) {
-    messages.push(element("div", {
-      className: "message info",
-      text: "No messages.",
-    }));
-  }
-
-  showMessages(messages);
-}
-
-
-function clearBuilder() {
-  dom.builderToolbar.replaceChildren();
-  dom.builderToolbar.style.display = "none";
-  dom.builder.replaceChildren();
-  dom.builderPanel.style.display = "none";
-}
-
-
-function renderApp() {
-  const calculator = getActiveCalculator();
-  const schema = getActiveSchema();
-
-  renderTabs();
-  if (!calculator || !schema) {
-    return;
-  }
-
-  const result = getActiveResult();
-  const ui = getActiveUi();
-  const shellConfig = ui.getShellConfig({ calculator, result, schema });
-
-  dom.calculatorTitle.textContent = calculator.title;
-  dom.calculatorDescription.textContent = calculator.description;
-  dom.heroPanel.style.display = shellConfig.showHero ? "" : "none";
-  dom.calculatorHeroCopy.style.display = shellConfig.showHero ? "" : "none";
-  dom.plotSectionTitle.textContent = shellConfig.plotSectionTitle;
-  dom.builderHint.textContent = shellConfig.builderHint;
-
-  if (shellConfig.showHero) {
-    renderGlobalControls();
-  } else {
-    dom.globalControls.replaceChildren();
-  }
-
-  renderSummary();
-  ui.renderPlot({
-    calculator,
-    plotHost: dom.plot,
-    readoutHost: dom.plotReadout,
-    result,
-    schema,
-  });
-
-  if (shellConfig.showBuilder) {
-    dom.builderPanel.style.display = "";
-    ui.renderBuilder({
-      builderContainer: dom.builder,
-      builderPanel: dom.builderPanel,
-      builderToolbar: dom.builderToolbar,
-      calculator,
-      result,
-      schema,
-    });
-  } else {
-    clearBuilder();
-  }
-
-  renderPlotMetrics();
-  renderMessages();
 }
 
 

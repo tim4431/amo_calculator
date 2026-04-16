@@ -9,7 +9,7 @@ import numpy as np
 
 from core.gaussian_beam import GaussianBeam
 
-from ..base import CalculatorDefinition
+from ..base import CalculatorDefinition, positive_float
 
 
 _DEFAULT_STATE: dict[str, Any] = {
@@ -20,17 +20,6 @@ _DEFAULT_STATE: dict[str, Any] = {
         "z_extent_mm": 80.0,
     }
 }
-
-
-def _safe_float(value: Any, default: float) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return float(default)
-
-
-def _positive_float(value: Any, default: float, minimum: float = 1e-9) -> float:
-    return max(minimum, _safe_float(value, default))
 
 
 class GaussianBeamCalculator(CalculatorDefinition):
@@ -94,10 +83,10 @@ class GaussianBeamCalculator(CalculatorDefinition):
 
         normalized = {
             "globals": {
-                "waist_radius_um": _positive_float(globals_state.get("waist_radius_um"), 50.0),
-                "wavelength_nm": _positive_float(globals_state.get("wavelength_nm"), 1064.0),
-                "refractive_index": _positive_float(globals_state.get("refractive_index"), 1.0),
-                "z_extent_mm": _positive_float(globals_state.get("z_extent_mm"), 80.0),
+                "waist_radius_um": positive_float(globals_state.get("waist_radius_um"), 50.0),
+                "wavelength_nm": positive_float(globals_state.get("wavelength_nm"), 1064.0),
+                "refractive_index": positive_float(globals_state.get("refractive_index"), 1.0),
+                "z_extent_mm": positive_float(globals_state.get("z_extent_mm"), 80.0),
             }
         }
 

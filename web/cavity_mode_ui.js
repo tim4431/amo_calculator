@@ -9,6 +9,12 @@ import {
   linspace,
   renderField,
 } from "./ui_common.js";
+import {
+  collectStandardMessages,
+  createBuilderPanel,
+  createMessagesPanel,
+  createPlotPanel,
+} from "./panels.js";
 
 
 const COMPONENT_ICON_PATHS = {
@@ -1096,7 +1102,7 @@ function findSegmentAtX(plot, xValue, preferredSegmentId = null) {
 }
 
 
-export function createOpticalAxisUi({
+function createOpticalAxisUi({
   getState,
   getSchema,
   onCommit,
@@ -1668,4 +1674,63 @@ export function createOpticalAxisUi({
       setPlotReadout(readoutHost, defaultPlotReadout(plot, result));
     },
   };
+}
+
+
+const CAVITY_SUCCESS_HINT =
+  "Edit element, gap, and boundary parameters directly in place. Move anywhere across the plot to inspect the active interval and its local beam data.";
+const CAVITY_BUILDER_HINT =
+  "Drag components onto the axis, drop onto other elements to swap them, edit parameters directly in place, and move across the plot to inspect the active interval.";
+
+
+export function createCavityModeTab({ title } = {}) {
+  function mount(workspace, services) {
+    const builder = createBuilderPanel({ heading: "Builder" });
+    builder.setHint(CAVITY_BUILDER_HINT);
+    const plot = createPlotPanel({ sectionTitle: title || "Cavity mode" });
+    const messages = createMessagesPanel();
+
+    workspace.append(builder.node, plot.node, messages.node);
+
+    const ui = createOpticalAxisUi({
+      getState: services.getState,
+      getSchema: services.getSchema,
+      onCommit: services.commitState,
+      onUpdateGlobal: services.updateGlobal,
+      onRerender: services.rerender,
+    });
+
+    function update(ctx) {
+      ui.syncState?.();
+      plot.setTitle(ctx.calculator?.title || title || "Cavity mode");
+
+      ui.renderBuilder({
+        builderPanel: builder.node,
+        builderToolbar: builder.toolbarHost,
+        builderContainer: builder.builderHost,
+      });
+
+      ui.renderPlot({
+        plotHost: plot.plotHost,
+        readoutHost: plot.readoutHost,
+        result: ctx.result,
+        schema: ctx.schema,
+      });
+
+      plot.setMetrics(ctx.result?.plot_metrics || []);
+      messages.setMessages(
+        collectStandardMessages(ctx.result, { successHint: CAVITY_SUCCESS_HINT }),
+      );
+    }
+
+    function unmount() {
+      ui.clearTransientState?.();
+      if (typeof Plotly?.purge === "function") Plotly.purge(plot.plotHost);
+      workspace.replaceChildren();
+    }
+
+    return { update, unmount };
+  }
+
+  return { mount };
 }

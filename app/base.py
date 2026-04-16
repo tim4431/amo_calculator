@@ -33,6 +33,22 @@ class CalculatorDefinition(ABC):
         """Execute the calculator and return JSON-serializable output."""
 
 
+def safe_float(value: Any, default: float) -> float:
+    """Best-effort float coercion that falls back to ``default`` on failure."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def positive_float(value: Any, default: float, minimum: float = 1e-9) -> float:
+    return max(minimum, safe_float(value, default))
+
+
+def clamped_float(value: Any, default: float, minimum: float, maximum: float) -> float:
+    return min(maximum, max(minimum, safe_float(value, default)))
+
+
 def to_serializable(value: Any) -> Any:
     """Recursively convert numpy values into JSON-safe Python objects."""
     if isinstance(value, dict):
@@ -53,4 +69,10 @@ def to_serializable(value: Any) -> Any:
     return value
 
 
-__all__ = ["CalculatorDefinition", "to_serializable"]
+__all__ = [
+    "CalculatorDefinition",
+    "clamped_float",
+    "positive_float",
+    "safe_float",
+    "to_serializable",
+]

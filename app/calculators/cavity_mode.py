@@ -10,7 +10,7 @@ import numpy as np
 from core.cavity_mode import BeamPoint, OpticalAxis
 from core.gaussian_beam import GaussianBeam
 
-from ..base import CalculatorDefinition
+from ..base import CalculatorDefinition, clamped_float, positive_float, safe_float
 
 
 _DEFAULT_STATE: dict[str, Any] = {
@@ -54,21 +54,6 @@ _DEFAULT_STATE: dict[str, Any] = {
         }
     ],
 }
-
-
-def _safe_float(value: Any, default: float) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return float(default)
-
-
-def _positive_float(value: Any, default: float, minimum: float = 1e-9) -> float:
-    return max(minimum, _safe_float(value, default))
-
-
-def _clamped_float(value: Any, default: float, minimum: float, maximum: float) -> float:
-    return min(maximum, max(minimum, _safe_float(value, default)))
 
 
 def _kind_prefix(kind: str) -> str:
@@ -289,7 +274,7 @@ class CavityModeCalculator(CalculatorDefinition):
 
         return {
             "globals": {
-                "wavelength_nm": _positive_float(raw_globals.get("wavelength_nm"), 780.0),
+                "wavelength_nm": positive_float(raw_globals.get("wavelength_nm"), 780.0),
                 "endpoint_ids": endpoint_ids,
             },
             "boundaries": self._normalize_boundaries(
@@ -324,20 +309,20 @@ class CavityModeCalculator(CalculatorDefinition):
             label = str(raw.get("label") or f"{_kind_title(kind)} {kind_counts[kind]}")
             reflection_value = raw.get("reflection")
             if reflection_value is None and raw.get("transmission") is not None:
-                reflection_value = 1.0 - _safe_float(raw.get("transmission"), 1.0)
+                reflection_value = 1.0 - safe_float(raw.get("transmission"), 1.0)
             element = {
                 "id": element_id,
                 "kind": kind,
                 "label": label,
-                "reflection": _clamped_float(reflection_value, _default_reflection(kind), 0.0, 1.0),
+                "reflection": clamped_float(reflection_value, _default_reflection(kind), 0.0, 1.0),
             }
             if kind == "curved_surface":
-                radius_mm = _safe_float(raw.get("radius_mm"), 50.0)
+                radius_mm = safe_float(raw.get("radius_mm"), 50.0)
                 if abs(radius_mm) < 1e-9:
                     radius_mm = 50.0
                 element["radius_mm"] = radius_mm
             elif kind == "lens":
-                focal_length_mm = _safe_float(raw.get("focal_length_mm"), 50.0)
+                focal_length_mm = safe_float(raw.get("focal_length_mm"), 50.0)
                 if abs(focal_length_mm) < 1e-9:
                     focal_length_mm = 50.0
                 element["focal_length_mm"] = focal_length_mm
@@ -353,8 +338,8 @@ class CavityModeCalculator(CalculatorDefinition):
             gaps.append(
                 {
                     "label": str(raw_gap.get("label") or f"Gap {idx + 1}"),
-                    "distance_mm": _positive_float(raw_gap.get("distance_mm"), 20.0),
-                    "refractive_index": _positive_float(raw_gap.get("refractive_index"), 1.0),
+                    "distance_mm": positive_float(raw_gap.get("distance_mm"), 20.0),
+                    "refractive_index": positive_float(raw_gap.get("refractive_index"), 1.0),
                 }
             )
         return gaps
@@ -368,24 +353,24 @@ class CavityModeCalculator(CalculatorDefinition):
     ) -> dict[str, dict[str, Any]]:
         left_raw = raw_boundaries.get("left", {}) if isinstance(raw_boundaries, dict) else {}
         right_raw = raw_boundaries.get("right", {}) if isinstance(raw_boundaries, dict) else {}
-        default_output_length = max(0.0, _safe_float(legacy_output_length, 40.0))
+        default_output_length = max(0.0, safe_float(legacy_output_length, 40.0))
         return {
             "left": {
                 "label": str(left_raw.get("label") or "Left boundary"),
-                "refractive_index": _positive_float(
+                "refractive_index": positive_float(
                     left_raw.get("refractive_index", legacy_left_n), 1.0, minimum=1e-6
                 ),
                 "output_length_mm": max(
-                    0.0, _safe_float(left_raw.get("output_length_mm"), default_output_length)
+                    0.0, safe_float(left_raw.get("output_length_mm"), default_output_length)
                 ),
             },
             "right": {
                 "label": str(right_raw.get("label") or "Right boundary"),
-                "refractive_index": _positive_float(
+                "refractive_index": positive_float(
                     right_raw.get("refractive_index", legacy_right_n), 1.0, minimum=1e-6
                 ),
                 "output_length_mm": max(
-                    0.0, _safe_float(right_raw.get("output_length_mm"), default_output_length)
+                    0.0, safe_float(right_raw.get("output_length_mm"), default_output_length)
                 ),
             },
         }
