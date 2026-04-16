@@ -1,0 +1,95 @@
+name: Deploy AMO Calculator
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Compile Python modules
+        run: |
+          python -m py_compile \
+            core/cavity_mode.py \
+            core/gaussian_beam.py \
+            webapp/__init__.py \
+            webapp/base.py \
+            webapp/registry.py \
+            webapp/calculators/__init__.py \
+            webapp/calculators/cavity_mode.py \
+            webapp/calculators/gaussian_beam.py
+
+      - name: Run calculator smoke tests
+        run: |
+          python - <<'PY'
+          from webapp.registry import get_calculator_schema, list_calculators, run_calculator
+
+          calculators = [item["id"] for item in list_calculators()]
+          print("calculators:", calculators)
+
+          cavity_schema = get_calculator_schema("cavity-mode")
+          cavity_result = run_calculator("cavity-mode", cavity_schema["default_state"])
+          assert cavity_result["ok"], cavity_result
+          assert cavity_result["plot"]["traces"], cavity_result["plot"]
+
+          beam_schema = get_calculator_schema("gaussian-beam")
+          beam_result = run_calculator("gaussian-beam", beam_schema["default_state"])
+          assert beam_result["ok"], beam_result
+          assert beam_result["plot"]["traces"], beam_result["plot"]
+
+          print("cavity waist:", cavity_result["summary_cards"][0]["value"])
+          print("gaussian waist:", beam_result["summary_cards"][0]["value"])
+          PY
+
+      - name: Build Pages artifact
+        run: python scripts/build_pages_site.py _site
+
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+          include-hidden-files: true
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
+    needs: build
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    permissions:
+      pages: write
+      id-token: write
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AMO Calculator</title>
+    <link rel="stylesheet" href="web/styles.css" />
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Static browser-side physics tools</p>
+          <h1>AMO Calculator</h1>
+          <p class="subtitle">
+            Python cores run in the browser through Pyodide, so the site can be deployed directly on GitHub Pages.
+          </p>
+        </div>
+        <div id="runtime-status" class="status-pill">Loading Python runtime...</div>
+      </header>
+
+      <nav id="tabs" class="tabs"></nav>
+
+      <div class="workspace">
+        <aside class="sidebar">
+          <section class="panel">
+            <h2 id="calculator-title">Calculator</h2>
+            <p id="calculator-description" class="panel-copy"></p>
+          </section>
+
+          <section class="panel">
+            <h3>Controls</h3>
+            <div id="global-controls" class="field-stack"></div>
+          </section>
+
+          <section id="inspector-panel" class="panel">
+            <h3>Inspector</h3>
+            <div id="inspector" class="field-stack"></div>
+          </section>
+
+          <section class="panel">
+            <h3>Summary</h3>
+            <div id="summary" class="summary-grid"></div>
+          </section>
+        </aside>
+
+        <main class="content">
+          <section id="builder-panel" class="panel">
+            <div class="panel-header">
+              <div>
+                <h3>Builder</h3>
+                <p id="builder-hint" class="panel-copy">
+                  Drag components onto the axis, click elements to edit optics, and click gaps to edit the medium and spacing.
+                </p>
+              </div>
+            </div>
+            <div id="builder"></div>
+          </section>
+
+          <section class="panel">
+            <h3>Messages</h3>
+            <div id="messages" class="messages"></div>
+          </section>
+
+          <section class="panel plot-panel">
+            <div id="plot" class="plot-host"></div>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <script type="module" src="web/app.js"></script>
+  </body>
+</html>

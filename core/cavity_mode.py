@@ -903,13 +903,6 @@ class OpticalAxis:
         one_way_forward_matrix: ABCDMatrix,
     ) -> complex:
         """Fallback solver for degenerate round-trip matrices such as confocal cavities."""
-        try:
-            from scipy.optimize import root
-        except ImportError as exc:
-            raise ValueError(
-                "The cavity geometry is degenerate and requires scipy for the fallback solver."
-            ) from exc
-
         left_target_inv = self._endpoint_target_inverse_curvature(left_item)
         right_target_inv = self._endpoint_target_inverse_curvature(right_item)
         cavity_length = right_item.ref.position - left_item.ref.position
@@ -940,15 +933,15 @@ class OpticalAxis:
         best_residual = np.inf
 
         for guess in guesses:
-            result = root(equations, guess)
-            if not result.success:
+            result = self._solve_nonlinear_system(equations, guess)
+            if result is None:
                 continue
 
-            q_candidate = complex(result.x[0], result.x[1])
+            q_candidate = complex(result[0], result[1])
             if np.imag(q_candidate) <= 0:
                 continue
 
-            residual = float(np.linalg.norm(equations(result.x)))
+            residual = float(np.linalg.norm(equations(result)))
             if residual < best_residual:
                 best_residual = residual
                 best_q = q_candidate
@@ -960,6 +953,60 @@ class OpticalAxis:
             )
 
         return best_q
+
+    @staticmethod
+    def _solve_nonlinear_system(
+        equations,
+        initial_guess: np.ndarray,
+        max_iterations: int = 50,
+        tolerance: float = 1e-12,
+    ) -> np.ndarray | None:
+        """Solve a 2D nonlinear system with a damped Newton iteration."""
+        x = np.asarray(initial_guess, dtype=float)
+
+        for _ in range(max_iterations):
+            f = np.asarray(equations(x), dtype=float)
+            residual = float(np.linalg.norm(f))
+            if not np.isfinite(residual):
+                return None
+            if residual < tolerance:
+                return x
+
+            step_scale = 1e-8 * max(1.0, np.linalg.norm(x))
+            jacobian = np.empty((2, 2), dtype=float)
+            for idx in range(2):
+                delta = np.zeros(2, dtype=float)
+                delta[idx] = step_scale
+                jacobian[:, idx] = (np.asarray(equations(x + delta), dtype=float) - f) / step_scale
+
+            try:
+                delta_x = np.linalg.solve(jacobian, -f)
+            except np.linalg.LinAlgError:
+                return None
+
+            accepted = False
+            damping = 1.0
+            while damping >= 1e-4:
+                candidate = x + damping * delta_x
+                if candidate[1] <= 0:
+                    damping *= 0.5
+                    continue
+
+                candidate_f = np.asarray(equations(candidate), dtype=float)
+                candidate_residual = float(np.linalg.norm(candidate_f))
+                if np.isfinite(candidate_residual) and candidate_residual < residual:
+                    x = candidate
+                    accepted = True
+                    break
+                damping *= 0.5
+
+            if not accepted:
+                return None
+
+        final_residual = float(np.linalg.norm(np.asarray(equations(x), dtype=float)))
+        if np.isfinite(final_residual) and final_residual < tolerance:
+            return x
+        return None
 
     @staticmethod
     def _endpoint_target_inverse_curvature(item: _ResolvedElement) -> float:
