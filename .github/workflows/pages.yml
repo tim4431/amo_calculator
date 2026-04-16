@@ -28,66 +28,24 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
 
       - name: Install Python dependencies
-        run: python -m pip install --upgrade pip numpy
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
         with:
           enablement: true
 
-      - name: Compile Python modules
-        run: |
-          python -m py_compile \
-            core/cavity_mode.py \
-            core/gaussian_beam.py \
-            app/__init__.py \
-            app/base.py \
-            app/registry.py \
-            app/calculators/__init__.py \
-            app/calculators/cavity_mode.py \
-            app/calculators/gaussian_beam.py \
-            app/calculators/marimo.py
+      - name: Compile browser Python modules
+        run: python scripts/ci_validate_calculators.py compile
 
       - name: Run calculator smoke tests
-        run: |
-          python - <<'PY'
-          from app.registry import get_calculator_schema, list_calculators, run_calculator
-
-          calculators = [item["id"] for item in list_calculators()]
-          print("calculators:", calculators)
-
-          cavity_schema = get_calculator_schema("cavity-mode")
-          cavity_result = run_calculator("cavity-mode", cavity_schema["default_state"])
-          assert cavity_result["ok"], cavity_result
-          assert cavity_result["plot"]["segments"], cavity_result["plot"]
-          assert cavity_result["plot_metrics"], cavity_result
-
-          beam_schema = get_calculator_schema("gaussian-beam")
-          beam_result = run_calculator("gaussian-beam", beam_schema["default_state"])
-          assert beam_result["ok"], beam_result
-          assert beam_result["plot"]["traces"], beam_result["plot"]
-          assert beam_result["summary_cards"], beam_result
-
-          marimo_schema = get_calculator_schema("marimo")
-          marimo_result = run_calculator("marimo", marimo_schema["default_state"])
-          assert marimo_result["ok"], marimo_result
-          assert marimo_result["plot"]["external_url"] == "https://amo_calculator.xwtim.com", marimo_result["plot"]
-
-          cavity_finesse = next(
-              (metric["value"] for metric in cavity_result["plot_metrics"] if metric["label"] == "Finesse"),
-              "n/a",
-          )
-          gaussian_waist = next(
-              (card["value"] for card in beam_result["summary_cards"] if card["label"] == "Waist radius"),
-              "n/a",
-          )
-
-          print("cavity finesse:", cavity_finesse)
-          print("gaussian waist:", gaussian_waist)
-          print("marimo url:", marimo_result["plot"]["external_url"])
-          PY
+        run: python scripts/ci_validate_calculators.py smoke
 
       - name: Build Pages artifact
         run: python scripts/build_pages_site.py _site

@@ -34,7 +34,7 @@ Calculators are registered in `app/registry.py` via `CALCULATOR_SPECS`, which al
 
 ### Build + deploy
 
-`scripts/build_pages_site.py` produces `_site/`, which is published by `.github/workflows/pages.yml`. `python_manifest.json` lists the Python files the browser should fetch.
+`scripts/build_pages_site.py` produces `_site/`, which is published by `.github/workflows/pages.yml`. `python_manifest.json` lists the Python files the browser should fetch, and `scripts/ci_validate_calculators.py` uses the same registry metadata to drive CI compile and smoke-test coverage.
 
 ## Tab model
 

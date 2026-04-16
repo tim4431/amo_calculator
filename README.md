@@ -73,28 +73,14 @@ https://amo_calculator.xwtim.com
 
 ## Python testing
 
-The current calculator wrappers were validated in the `calc` conda environment with:
+CI now validates Python-backed calculators from the registry instead of a hardcoded file list. In the `calc` conda environment, run:
 
 ```bash
-conda run --no-capture-output -n calc python -m py_compile \
-  core/cavity_mode.py \
-  core/gaussian_beam.py \
-  app/__init__.py \
-  app/base.py \
-  app/registry.py \
-  app/calculators/__init__.py \
-  app/calculators/cavity_mode.py \
-  app/calculators/gaussian_beam.py
+conda run --no-capture-output -n calc python scripts/ci_validate_calculators.py all
 ```
 
-And with direct execution of the registry:
+That script reads `app/registry.py` and:
 
-```bash
-conda run --no-capture-output -n calc python - <<'PY'
-from app.registry import list_calculators, get_calculator_schema, run_calculator
-
-print([c["id"] for c in list_calculators()])
-print(run_calculator("cavity-mode", get_calculator_schema("cavity-mode")["default_state"])["ok"])
-print(run_calculator("gaussian-beam", get_calculator_schema("gaussian-beam")["default_state"])["ok"])
-PY
-```
+- compiles every Python file listed in `python_files`,
+- smoke-tests every registered calculator with its `default_state`,
+- verifies that schemas and results remain JSON-serializable.

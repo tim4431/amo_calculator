@@ -24,6 +24,12 @@ Convert user-facing units (mm, nm, MHz) to SI inside the wrapper — do not leak
 
 Edit `app/registry.py` and add a new entry to `CALCULATOR_SPECS` with `id`, `title`, `description`, `layout`, `module`, `class_name`, and `python_files` (every `.py` the browser must fetch before running this calculator).
 
+That registry entry now drives three things at once:
+
+- the browser manifest in `python_manifest.json`,
+- the GitHub Actions compile step,
+- the GitHub Actions smoke test coverage.
+
 ### 4. Register in the frontend
 
 Edit `web/tabs.js` and add an entry to `TAB_REGISTRY`:
@@ -39,12 +45,7 @@ Use the panel factories in `web/panels.js` (`createHeroPanel`, `createPlotPanel`
 ### 5. Verify
 
 ```bash
-conda run --no-capture-output -n calc python -m py_compile \
-  core/<name>.py app/calculators/<name>.py
-conda run --no-capture-output -n calc python -c "
-from app.registry import get_calculator_schema, run_calculator
-print(run_calculator('<id>', get_calculator_schema('<id>')['default_state'])['ok'])
-"
+conda run --no-capture-output -n calc python scripts/ci_validate_calculators.py all
 ```
 
 Then hard-reload the page and click the new tab.
