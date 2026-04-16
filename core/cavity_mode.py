@@ -27,6 +27,7 @@ be used consistently from either direction.
 from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Union
 
@@ -790,9 +791,6 @@ class CavityModeSolution:
         }
 
 
-IntervalCavityModeSolution = CavityModeSolution
-
-
 @dataclass
 class OpticalAxis:
     """Position-defined optical axis with sector-based refractive indices."""
@@ -889,16 +887,6 @@ class OpticalAxis:
         )
         self._sectors.append(sector)
         return sector
-
-    def set_refractive_index(
-        self,
-        left: ElementRefLike | None,
-        right: ElementRefLike | None,
-        refractive_index: float,
-        label: str = "",
-    ) -> SectorDefinition:
-        """Alias for ``set_sector``."""
-        return self.set_sector(left, right, refractive_index, label=label)
 
     @property
     def elements(self) -> tuple[ElementReference, ...]:
@@ -1059,6 +1047,8 @@ class OpticalAxis:
         one_way_forward_matrix: ABCDMatrix,
     ) -> complex:
         """Fallback solver for degenerate round-trip matrices such as confocal cavities."""
+        from scipy.optimize import fsolve
+
         left_target_inv = self._endpoint_target_inverse_curvature(left_item)
         right_target_inv = self._endpoint_target_inverse_curvature(right_item)
         cavity_length = right_item.ref.position - left_item.ref.position
@@ -1066,8 +1056,8 @@ class OpticalAxis:
         def equations(vec: np.ndarray) -> np.ndarray:
             x, y = vec
             if y <= 0:
-                return np.array([1e6 + y**2, 1e6 + y**2], dtype=float)
-
+                penalty = 1.0 + y**2
+                return np.array([penalty, penalty], dtype=float)
             q_left = complex(x, y)
             q_right = one_way_forward_matrix.transform_q(q_left)
             return np.array(
@@ -1078,91 +1068,35 @@ class OpticalAxis:
                 dtype=float,
             )
 
-        guesses = [
-            np.array([-0.5 * cavity_length, 0.5 * cavity_length], dtype=float),
-            np.array([-0.5 * cavity_length, 0.25 * cavity_length], dtype=float),
-            np.array([0.0, 0.5 * cavity_length], dtype=float),
-            np.array([-0.25 * cavity_length, 0.5 * cavity_length], dtype=float),
-        ]
+        guesses = (
+            (-0.5 * cavity_length, 0.5 * cavity_length),
+            (-0.5 * cavity_length, 0.25 * cavity_length),
+            (0.0, 0.5 * cavity_length),
+            (-0.25 * cavity_length, 0.5 * cavity_length),
+        )
 
         best_q: complex | None = None
         best_residual = np.inf
-
         for guess in guesses:
-            result = self._solve_nonlinear_system(equations, guess)
-            if result is None:
+            solution, _info, ier, _msg = fsolve(
+                equations,
+                np.asarray(guess, dtype=float),
+                full_output=True,
+                xtol=1e-12,
+            )
+            if ier != 1 or solution[1] <= 0:
                 continue
-
-            q_candidate = complex(result[0], result[1])
-            if np.imag(q_candidate) <= 0:
-                continue
-
-            residual = float(np.linalg.norm(equations(result)))
+            residual = float(np.linalg.norm(equations(solution)))
             if residual < best_residual:
                 best_residual = residual
-                best_q = q_candidate
+                best_q = complex(solution[0], solution[1])
 
         if best_q is None or best_residual > 1e-8:
             raise ValueError(
                 "The round-trip matrix is degenerate and the curvature-based fallback solver "
                 "could not determine a unique cavity mode."
             )
-
         return best_q
-
-    @staticmethod
-    def _solve_nonlinear_system(
-        equations,
-        initial_guess: np.ndarray,
-        max_iterations: int = 50,
-        tolerance: float = 1e-12,
-    ) -> np.ndarray | None:
-        """Solve a 2D nonlinear system with a damped Newton iteration."""
-        x = np.asarray(initial_guess, dtype=float)
-
-        for _ in range(max_iterations):
-            f = np.asarray(equations(x), dtype=float)
-            residual = float(np.linalg.norm(f))
-            if not np.isfinite(residual):
-                return None
-            if residual < tolerance:
-                return x
-
-            step_scale = 1e-8 * max(1.0, np.linalg.norm(x))
-            jacobian = np.empty((2, 2), dtype=float)
-            for idx in range(2):
-                delta = np.zeros(2, dtype=float)
-                delta[idx] = step_scale
-                jacobian[:, idx] = (np.asarray(equations(x + delta), dtype=float) - f) / step_scale
-
-            try:
-                delta_x = np.linalg.solve(jacobian, -f)
-            except np.linalg.LinAlgError:
-                return None
-
-            accepted = False
-            damping = 1.0
-            while damping >= 1e-4:
-                candidate = x + damping * delta_x
-                if candidate[1] <= 0:
-                    damping *= 0.5
-                    continue
-
-                candidate_f = np.asarray(equations(candidate), dtype=float)
-                candidate_residual = float(np.linalg.norm(candidate_f))
-                if np.isfinite(candidate_residual) and candidate_residual < residual:
-                    x = candidate
-                    accepted = True
-                    break
-                damping *= 0.5
-
-            if not accepted:
-                return None
-
-        final_residual = float(np.linalg.norm(np.asarray(equations(x), dtype=float)))
-        if np.isfinite(final_residual) and final_residual < tolerance:
-            return x
-        return None
 
     @staticmethod
     def _endpoint_target_inverse_curvature(item: _ResolvedElement) -> float:
@@ -1273,7 +1207,6 @@ class OpticalAxis:
     def _propagation_unit(
         self, position_a: float, position_b: float, direction: int
     ) -> _TraversalUnit:
-        direction = _direction_sign(direction)
         left = min(position_a, position_b)
         right = max(position_a, position_b)
         refractive_index, sector_label = self._index_for_interval(left, right)
@@ -1304,7 +1237,6 @@ class OpticalAxis:
         direction: int,
         interaction: str = "transmit",
     ) -> _TraversalUnit:
-        direction = _direction_sign(direction)
         if interaction == "transmit":
             matrix = item.element.transmission_matrix(
                 item.index_left,
@@ -1342,6 +1274,38 @@ class OpticalAxis:
             element=item.element,
         )
 
+    def _walk_transmission_units(
+        self,
+        start_position: float,
+        items: Sequence[_ResolvedElement],
+        final_position: float | None,
+        direction: int,
+    ) -> tuple[_TraversalUnit, ...]:
+        """Walk ``items`` in traversal order, emitting propagation + transmission units.
+
+        ``items`` must already be ordered along the direction of travel. Each
+        element contributes an optional propagation from the current position
+        followed by a transmission unit. If ``final_position`` is given, a final
+        propagation reaches it after the last item.
+        """
+        units: list[_TraversalUnit] = []
+        current = start_position
+
+        def advance_to(target: float) -> None:
+            nonlocal current
+            if (direction == 1 and target > current) or (direction == -1 and target < current):
+                units.append(self._propagation_unit(current, target, direction=direction))
+            current = target
+
+        for item in items:
+            advance_to(item.ref.position)
+            units.append(self._build_surface_unit(item, direction=direction, interaction="transmit"))
+
+        if final_position is not None:
+            advance_to(final_position)
+
+        return tuple(units)
+
     def _build_inside_units(
         self,
         ordered: tuple[_ResolvedElement, ...],
@@ -1349,44 +1313,20 @@ class OpticalAxis:
         right_order_index: int,
         direction: int,
     ) -> tuple[_TraversalUnit, ...]:
-        direction = _direction_sign(direction)
-        units: list[_TraversalUnit] = []
+        interior = ordered[left_order_index + 1:right_order_index]
         if direction == 1:
-            current_position = ordered[left_order_index].ref.position
-            for item in ordered[left_order_index + 1:right_order_index]:
-                if item.ref.position > current_position:
-                    units.append(
-                        self._propagation_unit(
-                            current_position,
-                            item.ref.position,
-                            direction=1,
-                        )
-                    )
-                units.append(self._build_surface_unit(item, direction=1, interaction="transmit"))
-                current_position = item.ref.position
-
-            right_position = ordered[right_order_index].ref.position
-            if right_position > current_position:
-                units.append(self._propagation_unit(current_position, right_position, direction=1))
-        else:
-            current_position = ordered[right_order_index].ref.position
-            for item in reversed(ordered[left_order_index + 1:right_order_index]):
-                if current_position > item.ref.position:
-                    units.append(
-                        self._propagation_unit(
-                            current_position,
-                            item.ref.position,
-                            direction=-1,
-                        )
-                    )
-                units.append(self._build_surface_unit(item, direction=-1, interaction="transmit"))
-                current_position = item.ref.position
-
-            left_position = ordered[left_order_index].ref.position
-            if current_position > left_position:
-                units.append(self._propagation_unit(current_position, left_position, direction=-1))
-
-        return tuple(units)
+            return self._walk_transmission_units(
+                start_position=ordered[left_order_index].ref.position,
+                items=interior,
+                final_position=ordered[right_order_index].ref.position,
+                direction=1,
+            )
+        return self._walk_transmission_units(
+            start_position=ordered[right_order_index].ref.position,
+            items=tuple(reversed(interior)),
+            final_position=ordered[left_order_index].ref.position,
+            direction=-1,
+        )
 
     def _build_outside_units(
         self,
@@ -1394,25 +1334,16 @@ class OpticalAxis:
         boundary_order_index: int,
         direction: int,
     ) -> tuple[_TraversalUnit, ...]:
-        direction = _direction_sign(direction)
-        units: list[_TraversalUnit] = []
-
         if direction == 1:
-            current_position = ordered[boundary_order_index].ref.position
-            for item in ordered[boundary_order_index + 1:]:
-                if item.ref.position > current_position:
-                    units.append(self._propagation_unit(current_position, item.ref.position, 1))
-                units.append(self._build_surface_unit(item, direction=1, interaction="transmit"))
-                current_position = item.ref.position
+            items: Sequence[_ResolvedElement] = ordered[boundary_order_index + 1:]
         else:
-            current_position = ordered[boundary_order_index].ref.position
-            for item in reversed(ordered[:boundary_order_index]):
-                if current_position > item.ref.position:
-                    units.append(self._propagation_unit(current_position, item.ref.position, -1))
-                units.append(self._build_surface_unit(item, direction=-1, interaction="transmit"))
-                current_position = item.ref.position
-
-        return tuple(units)
+            items = tuple(reversed(ordered[:boundary_order_index]))
+        return self._walk_transmission_units(
+            start_position=ordered[boundary_order_index].ref.position,
+            items=items,
+            final_position=None,
+            direction=direction,
+        )
 
     @staticmethod
     def _matrix_for_units(units: tuple[_TraversalUnit, ...]) -> ABCDMatrix:
@@ -1438,7 +1369,6 @@ class OpticalAxis:
         start_position: float,
         start_index: float,
     ) -> PropagationPath:
-        direction = _direction_sign(direction)
         if wavelength <= 0:
             raise ValueError("wavelength must be positive.")
 
@@ -1517,7 +1447,6 @@ __all__ = [
     "CurvedSurface",
     "ElementReference",
     "GaussianBeam",
-    "IntervalCavityModeSolution",
     "Lens",
     "ModeStep",
     "OpticalAxis",
