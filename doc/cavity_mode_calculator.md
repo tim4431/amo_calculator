@@ -27,8 +27,13 @@ This document walks through the entire stack.
 ### Frontend
 
 - `web/app.js`
+- `web/ui_common.js`
+- `web/cavity_mode_ui.js`
 - `web/styles.css`
 - `index.html`
+- `assets/curved_surface.svg`
+- `assets/plane_surface.svg`
+- `assets/lens.svg`
 
 ## What The Calculator Does
 
@@ -39,6 +44,8 @@ It also computes:
 - the intracavity propagation path,
 - outgoing branches outside the cavity,
 - local Gaussian beam properties for each propagation segment,
+- cavity finesse,
+- cavity free spectral range from the selected endpoint interval,
 - inline browser visualizations and hover diagnostics.
 
 ## Core Solver Design
@@ -99,6 +106,25 @@ Important fields on `BeamPoint` include:
 
 This matters because once you move to another branch or cross an element, the local `q` changes, and the corresponding local waist description may also change.
 
+### Cavity metrics
+
+The core now also exposes cavity-level metrics directly on the solved
+`CavityModeSolution`.
+
+Important examples are:
+
+- `finesse`
+- `one_way_optical_path_length`
+- `free_spectral_range`
+
+The FSR is computed from the selected endpoint interval as:
+
+```text
+FSR = c / (2 * sum(n_i * L_i))
+```
+
+where the sum runs over the one-way propagation sectors inside the cavity.
+
 ## Wrapper Design
 
 The browser wrapper lives in `app/calculators/cavity_mode.py`.
@@ -109,11 +135,17 @@ Its job is to translate between frontend state and the scientific solver.
 
 The wrapper defines:
 
-- global settings such as wavelength and outgoing-beam display extent,
+- a global wavelength setting,
 - a list of elements,
 - a list of gaps,
-- the left and right external refractive indices,
+- left and right boundary objects,
 - the list of currently selected cavity endpoints.
+
+The boundary objects carry:
+
+- refractive index,
+- outgoing-beam display extent,
+- boundary label.
 
 ### State normalization
 
@@ -136,7 +168,7 @@ This scene describes:
 
 - placed elements,
 - gaps,
-- left and right boundary environments,
+- left and right boundary cards,
 - axis positions in display units.
 
 The frontend uses this scene to build the draggable visual editor.
@@ -162,17 +194,29 @@ Each segment contains data such as:
 
 This gives the frontend enough information to implement custom hover behavior without recomputing the physics in JavaScript.
 
+In addition, the wrapper returns `plot_metrics` for values that belong visually
+near the plot. In the current cavity-mode page, this is used for:
+
+- `Finesse`
+- `FSR`
+
 ## Frontend Design
 
-The cavity-mode calculator uses the `optical_axis` layout in `web/app.js`.
+The cavity-mode calculator uses the `optical_axis` layout coordinated by
+`web/app.js`, but the implementation is intentionally split.
+
+- `web/app.js` handles application state, Pyodide, registry calls, and generic rendering flow.
+- `web/ui_common.js` provides reusable DOM, formatting, and field-rendering helpers.
+- `web/cavity_mode_ui.js` provides cavity-specific descriptors, component icons, the palette, and optical-axis plot decorations.
 
 ### Builder
 
-The builder renders:
+The Builder panel renders:
 
+- a toolbar row with the wavelength input and the component selector on the same line,
 - draggable element cards,
 - gap cards,
-- left and right environment cards,
+- left and right boundary cards,
 - endpoint toggles,
 - inline editors for optical parameters.
 
@@ -185,7 +229,11 @@ This means:
 - element titles can be edited directly,
 - `ROC`, `R`, and displayed `T` can be edited on the card,
 - gap refractive index and spacing can be edited on the gap card,
-- boundary refractive index can be edited on the environment cards.
+- boundary refractive index and outgoing-beam extent can be edited directly on the boundary cards.
+
+The current cavity page does not use the old top summary cards. Instead, the
+builder remains focused on editing, while the visualization panel displays
+solver metrics below the plot.
 
 ### Hover model
 
@@ -220,10 +268,11 @@ The cavity-mode calculator follows this runtime flow.
 3. The browser state is passed back to the cavity-mode wrapper.
 4. The wrapper normalizes state and constructs an `OpticalAxis`.
 5. The core solver computes the cavity mode and propagated branches.
-6. The wrapper serializes the result into `scene`, `plot`, and `summary_cards`.
+6. The wrapper serializes the result into `scene`, `plot`, and `plot_metrics`.
 7. The frontend renders:
-   - the builder,
-   - the plot,
+   - the Builder toolbar and optical-axis editor,
+   - the Cavity mode plot,
+   - the plot metrics,
    - hover readout,
    - messages.
 
@@ -251,7 +300,9 @@ Reuse these ideas:
 - keep the solver in `core/`,
 - keep state normalization in the wrapper,
 - return explicit JSON structures for scene and plot,
-- keep browser interaction logic in `web/app.js`,
+- keep generic browser helpers in `web/ui_common.js`,
+- keep cavity- or layout-specific browser logic in dedicated files such as `web/cavity_mode_ui.js`,
+- keep `web/app.js` as the orchestration shell,
 - do not let the core depend on frontend behavior.
 
 ## Practical Testing Checklist
@@ -269,13 +320,17 @@ For cavity-mode development, the recommended checks are:
 - evaluate the default state,
 - verify endpoint normalization,
 - verify scene serialization,
-- verify segment metadata.
+- verify segment metadata,
+- verify `Finesse` and `FSR` formatting in `plot_metrics`.
 
 ### Frontend checks
 
+- confirm that the wavelength field and component palette share one Builder row,
 - drag and reorder elements,
 - edit optical coefficients inline,
 - edit gap `n` and spacing inline,
+- edit boundary `n` and outgoing extent inline,
 - toggle endpoints,
 - inspect local hover mode and waist overlay,
-- confirm that plot extents remain stable during hover.
+- confirm that plot extents remain stable during hover,
+- confirm that the plot panel shows `Finesse` and `FSR` below the visualization.

@@ -268,10 +268,23 @@ input[type="range"] {
 }
 
 .builder-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 16px;
+}
+
+.builder-toolbar-fields {
   display: grid;
   grid-template-columns: minmax(180px, 260px);
   gap: 12px;
-  margin-bottom: 16px;
+  flex: 0 0 auto;
+}
+
+.builder-toolbar .palette {
+  flex: 1 1 520px;
 }
 
 .palette {

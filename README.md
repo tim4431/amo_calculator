@@ -11,7 +11,7 @@ Live site: [tim4431.github.io/amo_calculator](https://tim4431.github.io/amo_calc
 - `app/`
   Browser-facing Python wrappers and the calculator registry.
 - `web/`
-  Static frontend assets that load Pyodide and render the UI.
+  Static frontend assets and reusable UI modules that load Pyodide and render the UI.
 - `example/`
   Standalone Python examples.
 - `doc/`
@@ -27,7 +27,7 @@ Live site: [tim4431.github.io/amo_calculator](https://tim4431.github.io/amo_calc
 ## Current browser calculators
 
 - `Cavity Mode`
-  Build a 1D optical axis, insert and reorder elements, edit gap spacing and refractive index, and inspect the cavity mode plus outgoing beams.
+  Build a 1D optical axis, insert and reorder elements, edit gap and boundary parameters, inspect the cavity mode plus outgoing beams, and read off cavity finesse and FSR.
 - `Gaussian Beam`
   A smaller calculator that demonstrates the multi-tab registry with a different Python backend.
 

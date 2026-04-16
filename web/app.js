@@ -1,3 +1,23 @@
+import {
+  clamp,
+  deepCopy,
+  element,
+  formatCompactNumber,
+  formatNumber,
+  getValueByPath,
+  hexToRgba,
+  renderField,
+  setValueByPath,
+} from "./ui_common.js";
+import {
+  boundaryPropertyDescriptors,
+  buildComponentPalette,
+  buildElementPlotTraces,
+  createComponentIcon,
+  elementPropertyDescriptors,
+  gapPropertyDescriptors,
+} from "./cavity_mode_ui.js";
+
 const PYODIDE_INDEX_URL = "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/";
 
 const PYTHON_FILES = [
@@ -11,12 +31,6 @@ const PYTHON_FILES = [
   "app/calculators/cavity_mode.py",
   "app/calculators/gaussian_beam.py",
 ];
-
-const COMPONENT_ICON_PATHS = {
-  curved_surface: "assets/curved_surface.svg",
-  plane_surface: "assets/plane_surface.svg",
-  lens: "assets/lens.svg",
-};
 
 const appState = {
   pyodide: null,
@@ -55,36 +69,6 @@ const dom = {
 };
 
 
-function deepCopy(value) {
-  return JSON.parse(JSON.stringify(value));
-}
-
-
-function element(tagName, options = {}) {
-  const node = document.createElement(tagName);
-  if (options.className) {
-    node.className = options.className;
-  }
-  if (options.text !== undefined) {
-    node.textContent = options.text;
-  }
-  if (options.html !== undefined) {
-    node.innerHTML = options.html;
-  }
-  if (options.attrs) {
-    for (const [key, value] of Object.entries(options.attrs)) {
-      if (value !== undefined && value !== null) {
-        node.setAttribute(key, String(value));
-      }
-    }
-  }
-  if (options.children) {
-    node.append(...options.children);
-  }
-  return node;
-}
-
-
 function getActiveSchema() {
   return appState.schemas.get(appState.activeCalculatorId) || null;
 }
@@ -103,68 +87,6 @@ function getActiveResult() {
 function setStatus(message, kind = "") {
   dom.runtimeStatus.textContent = message;
   dom.runtimeStatus.className = `status-pill${kind ? ` ${kind}` : ""}`;
-}
-
-
-function getValueByPath(target, path) {
-  return path.split(".").reduce((value, key) => (value == null ? undefined : value[key]), target);
-}
-
-
-function setValueByPath(target, path, value) {
-  const parts = path.split(".");
-  let cursor = target;
-  for (let index = 0; index < parts.length - 1; index += 1) {
-    const key = parts[index];
-    if (typeof cursor[key] !== "object" || cursor[key] === null) {
-      cursor[key] = {};
-    }
-    cursor = cursor[key];
-  }
-  cursor[parts[parts.length - 1]] = value;
-}
-
-
-function optionsForField(field, calculatorState) {
-  if (field.options_source === "elements") {
-    return (calculatorState.elements || []).map((item) => ({
-      value: item.id,
-      label: item.label,
-    }));
-  }
-  return field.options || [];
-}
-
-
-function formatNumber(value, digits = 3) {
-  return Number(value).toFixed(digits);
-}
-
-
-function formatCompactNumber(value, digits = 3) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) {
-    return String(value);
-  }
-  const rounded = Number(number.toFixed(digits));
-  return String(rounded);
-}
-
-
-function clamp(value, minimum, maximum) {
-  return Math.min(maximum, Math.max(minimum, value));
-}
-
-
-function hexToRgba(hexColor, alpha) {
-  const hex = hexColor.replace("#", "");
-  const normalized = hex.length === 3
-    ? hex.split("").map((part) => part + part).join("")
-    : hex;
-  const red = parseInt(normalized.slice(0, 2), 16);
-  const green = parseInt(normalized.slice(2, 4), 16);
-  const blue = parseInt(normalized.slice(4, 6), 16);
-  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
 }
 
 
@@ -658,115 +580,6 @@ function renderTabs() {
 }
 
 
-function renderField(field, value, onChange, calculatorState) {
-  const wrapper = element("div", { className: "field" });
-  const label = element("label", {
-    className: "field-label",
-    children: [
-      element("span", { text: field.label }),
-      element("span", { className: "field-unit", text: field.unit || "" }),
-    ],
-  });
-  wrapper.append(label);
-
-  if (field.type === "range_number") {
-    const row = element("div", { className: "range-number" });
-    const rangeInput = element("input", {
-      attrs: {
-        type: "range",
-        min: field.min,
-        max: field.max,
-        step: field.step || 0.01,
-        value,
-      },
-    });
-    const numberInput = element("input", {
-      attrs: {
-        type: "number",
-        min: field.min,
-        max: field.max,
-        step: field.step || 0.01,
-        value,
-      },
-    });
-    const syncValue = (rawValue) => {
-      const nextValue = Number(rawValue);
-      rangeInput.value = String(nextValue);
-      numberInput.value = String(nextValue);
-      onChange(nextValue);
-    };
-    rangeInput.addEventListener("input", () => syncValue(rangeInput.value));
-    numberInput.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        numberInput.blur();
-      }
-    });
-    numberInput.addEventListener("change", () => syncValue(numberInput.value));
-    numberInput.addEventListener("blur", () => syncValue(numberInput.value));
-    row.append(rangeInput, numberInput);
-    wrapper.append(row);
-    return wrapper;
-  }
-
-  if (field.type === "number") {
-    const input = element("input", {
-      attrs: {
-        type: "number",
-        step: field.step || 0.01,
-        value,
-      },
-    });
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        input.blur();
-      }
-    });
-    input.addEventListener("change", () => onChange(Number(input.value)));
-    input.addEventListener("blur", () => onChange(Number(input.value)));
-    wrapper.append(input);
-    return wrapper;
-  }
-
-  if (field.type === "text") {
-    const input = element("input", {
-      attrs: {
-        type: "text",
-        value: value || "",
-      },
-    });
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        input.blur();
-      }
-    });
-    input.addEventListener("change", () => onChange(input.value));
-    input.addEventListener("blur", () => onChange(input.value));
-    wrapper.append(input);
-    return wrapper;
-  }
-
-  if (field.type === "select") {
-    const select = element("select");
-    const options = optionsForField(field, calculatorState);
-    for (const option of options) {
-      const optionNode = element("option", {
-        text: option.label,
-        attrs: { value: option.value },
-      });
-      if (option.value === value) {
-        optionNode.selected = true;
-      }
-      select.append(optionNode);
-    }
-    select.addEventListener("change", () => onChange(select.value));
-    wrapper.append(select);
-    return wrapper;
-  }
-
-  return wrapper;
-}
-
-
 function renderGlobalControls() {
   const schema = getActiveSchema();
   const calculatorState = getActiveState();
@@ -792,7 +605,7 @@ function renderBuilderToolbar() {
     return;
   }
 
-  const nodes = (schema.global_fields || []).map((field) =>
+  const fieldNodes = (schema.global_fields || []).map((field) =>
     renderField(
       field,
       getValueByPath(calculatorState, field.path),
@@ -800,8 +613,22 @@ function renderBuilderToolbar() {
       calculatorState,
     )
   );
-  dom.builderToolbar.replaceChildren(...nodes);
-  dom.builderToolbar.style.display = nodes.length ? "" : "none";
+
+  const palette = buildComponentPalette(schema, (event, kind) => {
+    event.dataTransfer.setData("text/plain", JSON.stringify({
+      source: "palette",
+      kind,
+    }));
+  });
+
+  dom.builderToolbar.replaceChildren(
+    element("div", {
+      className: "builder-toolbar-fields",
+      children: fieldNodes,
+    }),
+    palette,
+  );
+  dom.builderToolbar.style.display = "";
 }
 
 
@@ -850,118 +677,6 @@ function renderPlotMetrics() {
   );
   dom.plotMetrics.replaceChildren(...cards);
   dom.plotMetrics.style.display = "";
-}
-
-
-function elementPropertyDescriptors(item) {
-  const descriptors = [
-    {
-      key: "reflection",
-      label: "R",
-      kind: "fraction",
-      digits: 3,
-      step: 0.01,
-      min: 0.0,
-      max: 1.0,
-    },
-    {
-      key: "transmission",
-      label: "T",
-      kind: "fraction",
-      digits: 3,
-      step: 0.01,
-      min: 0.0,
-      max: 1.0,
-    },
-  ];
-
-  if (item.kind === "curved_surface") {
-    descriptors.unshift({
-      key: "radius_mm",
-      label: "ROC",
-      kind: "length",
-      digits: 3,
-      step: 0.1,
-      unit: "mm",
-    });
-  }
-
-  if (item.kind === "lens") {
-    descriptors.unshift({
-      key: "focal_length_mm",
-      label: "f",
-      kind: "length",
-      digits: 3,
-      step: 0.1,
-      unit: "mm",
-    });
-  }
-
-  return descriptors;
-}
-
-
-function gapPropertyDescriptors() {
-  return [
-    {
-      key: "refractive_index",
-      label: "n",
-      kind: "number",
-      digits: 4,
-      step: 0.001,
-      minimum: 1e-6,
-      suffix: "",
-    },
-    {
-      key: "distance_mm",
-      label: "d",
-      kind: "length_mm",
-      digits: 3,
-      step: 0.1,
-      minimum: 0.0,
-      suffix: "mm",
-    },
-  ];
-}
-
-
-function boundaryPropertyDescriptors() {
-  return [
-    {
-      key: "refractive_index",
-      label: "n",
-      kind: "number",
-      digits: 4,
-      step: 0.001,
-      minimum: 1e-6,
-      suffix: "",
-    },
-    {
-      key: "output_length_mm",
-      label: "out",
-      kind: "length_mm",
-      digits: 3,
-      step: 0.1,
-      minimum: 0.0,
-      suffix: "mm",
-    },
-  ];
-}
-
-
-function createComponentIcon(kind, label, className = "component-icon", { flipX = false } = {}) {
-  const src = COMPONENT_ICON_PATHS[kind];
-  if (!src) {
-    return element("span", { className: `${className} placeholder`, text: "" });
-  }
-  return element("img", {
-    className: `${className}${flipX ? " is-flipped" : ""}`,
-    attrs: {
-      src,
-      alt: `${label} icon`,
-      draggable: "false",
-    },
-  });
 }
 
 
@@ -1370,29 +1085,6 @@ function renderAxisBuilder() {
 
   dom.builderPanel.style.display = "";
 
-  const paletteNodes = (schema.palette || []).map((item) => {
-    const chip = element("div", {
-      className: "palette-item",
-      children: [
-        createComponentIcon(item.kind, item.label, "palette-icon"),
-        element("span", { text: item.label }),
-      ],
-      attrs: { draggable: "true" },
-    });
-    chip.addEventListener("dragstart", (event) => {
-      event.dataTransfer.setData("text/plain", JSON.stringify({
-        source: "palette",
-        kind: item.kind,
-      }));
-    });
-    return chip;
-  });
-
-  const palette = element("div", {
-    className: "palette",
-    children: paletteNodes,
-  });
-
   const axisShell = element("div", { className: "axis-shell" });
   const track = element("div", { className: "axis-track" });
 
@@ -1422,7 +1114,7 @@ function renderAxisBuilder() {
   dom.builder.replaceChildren(
     element("div", {
       className: "builder-layout",
-      children: [palette, axisShell],
+      children: [axisShell],
     })
   );
 }
@@ -1476,66 +1168,6 @@ function linspace(start, stop, count) {
     values.push(start + step * index);
   }
   return values;
-}
-
-
-function buildElementPlotTraces(plot, yMax) {
-  const traces = [];
-  const annotations = [];
-  for (const item of plot.elements || []) {
-    const topY = 0.93 * yMax;
-    const labelY = 1.02 * yMax;
-    if (item.kind === "plane_surface") {
-      const y = linspace(-topY, topY, 2);
-      const x = y.map(() => item.position_mm);
-      traces.push({
-        x,
-        y,
-        type: "scatter",
-        mode: "lines",
-        hoverinfo: "skip",
-        line: { color: "#334155", width: 3 },
-        showlegend: false,
-      });
-    } else if (item.kind === "curved_surface") {
-      const y = linspace(-topY, topY, 180);
-      const normalized = y.map((value) => value / topY);
-      const x = normalized.map((value) => item.position_mm + Math.sign(item.radius_mm || 1) * 1.1 * value * value);
-      traces.push({
-        x,
-        y,
-        type: "scatter",
-        mode: "lines",
-        hoverinfo: "skip",
-        line: { color: "#334155", width: 3 },
-        showlegend: false,
-      });
-    } else if (item.kind === "lens") {
-      const theta = linspace(0, 2 * Math.PI, 180);
-      const xRadius = 0.42;
-      const yRadius = topY * 0.9;
-      traces.push({
-        x: theta.map((value) => item.position_mm + xRadius * Math.cos(value)),
-        y: theta.map((value) => yRadius * Math.sin(value)),
-        type: "scatter",
-        mode: "lines",
-        hoverinfo: "skip",
-        line: { color: "#1d4ed8", width: 3 },
-        fill: "toself",
-        fillcolor: "rgba(29, 78, 216, 0.18)",
-        showlegend: false,
-      });
-    }
-    annotations.push({
-      x: item.position_mm,
-      y: labelY,
-      text: item.label,
-      showarrow: false,
-      textangle: -90,
-      font: { size: 13, color: "#334155" },
-    });
-  }
-  return { traces, annotations };
 }
 
 

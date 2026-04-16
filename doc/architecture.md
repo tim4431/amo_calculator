@@ -65,6 +65,7 @@ Examples:
 
 Typical responsibilities:
 
+- provide reusable DOM, formatting, and form helpers,
 - load Pyodide,
 - copy Python files into the browser filesystem,
 - call Python wrappers through a small bridge,
@@ -73,7 +74,16 @@ Typical responsibilities:
 Examples:
 
 - `web/app.js`
+- `web/ui_common.js`
+- `web/cavity_mode_ui.js`
 - `web/styles.css`
+
+In the current frontend split:
+
+- `web/app.js` is the application shell and runtime orchestrator,
+- `web/ui_common.js` contains reusable field and formatting helpers,
+- `web/cavity_mode_ui.js` contains cavity-mode-specific browser logic such as
+  optical-axis cards, component icons, and plot decorations.
 
 ### 4. Static entrypoint and build scripts
 
@@ -90,14 +100,14 @@ Important pieces:
 The browser runtime works as follows.
 
 1. `index.html` loads the static frontend.
-2. `web/app.js` loads Pyodide in the browser.
+2. `web/app.js` loads Pyodide in the browser and imports the shared frontend modules it needs.
 3. The frontend fetches Python source files from the repository and writes them into Pyodide's in-memory filesystem.
 4. The frontend imports `app.registry`.
 5. The frontend asks the registry for:
    - the list of calculators,
    - the schema for the active calculator,
    - the result of evaluating the current state.
-6. The frontend renders the returned JSON.
+6. The frontend renders the returned JSON, including plot data, scene data, and optional metric cards.
 
 No backend server is required for the normal user path.
 
@@ -141,6 +151,7 @@ Typical result fields include:
 - `scene`
 - `plot`
 - `summary_cards`
+- `plot_metrics`
 
 ## Why This Split Works Well
 
@@ -163,6 +174,14 @@ Because the UI runs Python through Pyodide, deployment is as simple as serving s
 ### Multi-calculator Support
 
 The registry gives every calculator the same entry contract. This makes it easy to add more tabs without redesigning the frontend each time.
+
+### Frontend Reuse
+
+The frontend is no longer treated as one large file.
+
+Shared browser behavior can live in reusable modules, while layout-specific
+logic can be kept in dedicated files. This keeps a calculator-specific UI from
+turning into a project-wide tangle.
 
 ### Testability
 
@@ -196,6 +215,14 @@ Use this rule of thumb.
 - it handles drag-and-drop,
 - it renders plots,
 - it controls hover behavior and display logic.
+
+Within `web/`, prefer a second split:
+
+- put general-purpose browser helpers in shared modules such as `web/ui_common.js`,
+- put calculator- or layout-specific rendering logic in focused modules such as
+  `web/cavity_mode_ui.js`,
+- keep `web/app.js` as the orchestration layer that owns runtime state,
+  registry calls, and high-level rendering flow.
 
 ## Deployment Model
 

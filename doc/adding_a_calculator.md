@@ -97,6 +97,15 @@ Examples:
 
 The wrapper declares the layout; the frontend decides how to render that layout.
 
+In the current frontend structure, avoid putting every new interaction pattern
+directly into `web/app.js`.
+
+Instead:
+
+- reuse shared field and formatting helpers from `web/ui_common.js`,
+- add layout- or calculator-specific browser logic in a dedicated module,
+- import that module from `web/app.js`.
+
 ## Step 5: Return Structured Output
 
 Try to keep the result format explicit and predictable.
@@ -109,6 +118,7 @@ A good result object often contains:
 - `normalized_state`
 - `plot`
 - `summary_cards`
+- `plot_metrics`
 
 If the calculator has a custom interactive scene, include a dedicated `scene` field as well.
 
@@ -160,6 +170,10 @@ The core module should not care how the browser stores state.
 
 A wrapper should produce field names that the frontend can understand without hidden assumptions.
 
+If a calculator exposes metrics that belong visually near the plot rather than
+in the top-level summary, return them through a separate field such as
+`plot_metrics` instead of overloading `summary_cards`.
+
 ### Prefer deterministic normalization
 
 If the user state is incomplete or partially legacy, normalize it in one place inside the wrapper.
@@ -177,7 +191,8 @@ You might do the following.
    - a call into `core.stark_shift`,
    - formatted plot data.
 3. Import and register `StarkShiftCalculator` in `app/registry.py`.
-4. Refresh the browser app and verify that a new tab appears.
+4. If needed, add a focused frontend module in `web/` for any special layout behavior.
+5. Refresh the browser app and verify that a new tab appears.
 
 ## When To Avoid Running In The Browser
 
