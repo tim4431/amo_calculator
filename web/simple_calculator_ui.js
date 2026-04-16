@@ -110,6 +110,12 @@ export function createSimpleCalculatorUi() {
     },
 
     renderPlot({ plotHost, readoutHost, result, calculator, schema }) {
+      readoutHost.style.display = "";
+      plotHost.style.minHeight = "";
+      if (typeof Plotly?.purge === "function") {
+        Plotly.purge(plotHost);
+      }
+      plotHost.replaceChildren();
       const plot = (result && result.plot) || {
         traces: [],
         waist_marker: null,

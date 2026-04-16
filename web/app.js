@@ -6,6 +6,7 @@ import {
   setValueByPath,
 } from "./ui_common.js";
 import { createCalculatorUiRegistry } from "./calculator_ui_registry.js";
+import { createExternalLinksTabDefinition } from "./external_link_ui.js";
 
 const PYODIDE_INDEX_URL = "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/";
 
@@ -50,6 +51,10 @@ const dom = {
   plotMetrics: document.getElementById("plot-metrics"),
   messages: document.getElementById("messages"),
 };
+
+const FRONTEND_CALCULATORS = [
+  createExternalLinksTabDefinition(),
+];
 
 
 function getActiveCalculator() {
@@ -99,7 +104,7 @@ function updateGlobalField(path, value) {
 const uiRegistry = createCalculatorUiRegistry({
   getState: getActiveState,
   getSchema: getActiveSchema,
-  onCommit: (nextState) => commitState(nextState),
+  onCommit: (nextState, options) => commitState(nextState, options),
   onUpdateGlobal: updateGlobalField,
   onRerender: renderApp,
 });
@@ -232,16 +237,32 @@ run_calculator_json(_bridge_calculator_id, _bridge_state_json)
 }
 
 
+function registerFrontendCalculators() {
+  for (const definition of FRONTEND_CALCULATORS) {
+    appState.calculators.push(deepCopy(definition.manifest));
+    appState.schemas.set(definition.manifest.id, deepCopy(definition.schema));
+    appState.states.set(
+      definition.manifest.id,
+      deepCopy(definition.initial_state ?? definition.schema.default_state ?? {}),
+    );
+    if (definition.initial_result) {
+      appState.results.set(definition.manifest.id, deepCopy(definition.initial_result));
+    }
+  }
+}
+
+
 async function initializeApplication() {
   try {
     await loadPyodideRuntime();
     appState.calculators = pyodideCallListCalculators();
-    const defaultCalculator = appState.calculators.find((calculator) => !calculator.tab_url) || appState.calculators[0] || null;
+    registerFrontendCalculators();
+    const defaultCalculator = appState.calculators[0] || null;
     appState.activeCalculatorId = defaultCalculator ? defaultCalculator.id : null;
     await ensureCalculatorLoaded(appState.activeCalculatorId);
     uiRegistry.clearTransientState();
     renderApp();
-    if (appState.activeCalculatorId && !defaultCalculator?.tab_url) {
+    if (appState.activeCalculatorId && !defaultCalculator?.frontend_only) {
       await recomputeActiveCalculator();
     }
   } catch (error) {
@@ -259,7 +280,9 @@ async function initializeApplication() {
 
 async function recomputeActiveCalculator() {
   const calculatorId = appState.activeCalculatorId;
-  if (!calculatorId || !appState.pyodide) {
+  const calculator = getActiveCalculator();
+  if (!calculatorId || !appState.pyodide || calculator?.frontend_only) {
+    setStatus("Python runtime ready");
     return;
   }
   await ensureCalculatorLoaded(calculatorId);
@@ -293,18 +316,6 @@ async function recomputeActiveCalculator() {
 
 function renderTabs() {
   const nodes = appState.calculators.map((calculator) => {
-    if (calculator.tab_url) {
-      return element("a", {
-        className: "tab",
-        text: calculator.title,
-        attrs: {
-          href: calculator.tab_url,
-          target: calculator.open_in_new_tab ? "_blank" : "_self",
-          rel: calculator.open_in_new_tab ? "noreferrer" : undefined,
-        },
-      });
-    }
-
     const button = element("button", {
       className: `tab${calculator.id === appState.activeCalculatorId ? " active" : ""}`,
       text: calculator.title,

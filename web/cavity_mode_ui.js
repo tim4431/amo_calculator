@@ -1382,6 +1382,12 @@ export function createOpticalAxisUi({
     },
 
     renderPlot({ plotHost, readoutHost, result, schema }) {
+      readoutHost.style.display = "";
+      plotHost.style.minHeight = "";
+      if (typeof Plotly?.purge === "function") {
+        Plotly.purge(plotHost);
+      }
+      plotHost.replaceChildren();
       const plot = (result && result.plot) || {
         traces: [],
         segments: [],

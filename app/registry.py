@@ -44,19 +44,6 @@ CALCULATOR_SPECS: dict[str, dict[str, Any]] = {
             "app/calculators/gaussian_beam.py",
         ],
     },
-    "marimo": {
-        "id": "marimo",
-        "title": "marimo",
-        "description": "Open the hosted marimo app in a separate tab.",
-        "layout": "external_link",
-        "module": "app.calculators.marimo",
-        "class_name": "MarimoCalculator",
-        "python_files": [
-            "app/calculators/marimo.py",
-        ],
-        "tab_url": "https://amo_calculator.xwtim.com",
-        "open_in_new_tab": True,
-    },
 }
 
 
@@ -81,16 +68,12 @@ _CALCULATOR_CACHE: dict[str, CalculatorDefinition] = {}
 
 
 def _manifest_from_spec(spec: dict[str, Any]) -> dict[str, Any]:
-    manifest = {
+    return {
         "id": spec["id"],
         "title": spec["title"],
         "description": spec["description"],
         "layout": spec["layout"],
     }
-    if spec.get("tab_url"):
-        manifest["tab_url"] = spec["tab_url"]
-        manifest["open_in_new_tab"] = bool(spec.get("open_in_new_tab", False))
-    return manifest
 
 
 def _get_spec(calculator_id: str) -> dict[str, Any]:

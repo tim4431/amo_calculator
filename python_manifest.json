@@ -15,9 +15,6 @@
     "gaussian-beam": [
       "core/gaussian_beam.py",
       "app/calculators/gaussian_beam.py"
-    ],
-    "marimo": [
-      "app/calculators/marimo.py"
     ]
   },
   "python_files": [
@@ -29,7 +26,6 @@
     "core/cavity_mode.py",
     "core/gaussian_beam.py",
     "app/calculators/cavity_mode.py",
-    "app/calculators/gaussian_beam.py",
-    "app/calculators/marimo.py"
+    "app/calculators/gaussian_beam.py"
   ]
 }

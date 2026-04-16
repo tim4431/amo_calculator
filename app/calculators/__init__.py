@@ -5,12 +5,11 @@ from __future__ import annotations
 from importlib import import_module
 
 
-__all__ = ["CavityModeCalculator", "GaussianBeamCalculator", "MarimoCalculator"]
+__all__ = ["CavityModeCalculator", "GaussianBeamCalculator"]
 
 _MODULE_BY_NAME = {
     "CavityModeCalculator": ".cavity_mode",
     "GaussianBeamCalculator": ".gaussian_beam",
-    "MarimoCalculator": ".marimo",
 }
 
 

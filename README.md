@@ -30,8 +30,8 @@ Live site: [tim4431.github.io/amo_calculator](https://tim4431.github.io/amo_calc
   Build a 1D optical axis, insert and reorder elements, edit gap and boundary parameters, inspect the cavity mode plus outgoing beams, and read off cavity finesse and FSR.
 - `Gaussian Beam`
   A smaller calculator that demonstrates the multi-tab registry with a different Python backend.
-- `marimo`
-  A tab that opens the hosted marimo app at `https://amo_calculator.xwtim.com`.
+- `Link`
+  A frontend-only tab with clickable cards for external destinations, including the hosted marimo app, Lens Pair Finder, Cavity Mode Viewer, and Tuning Range.
 
 ## Run locally
 
@@ -53,7 +53,7 @@ The browser runtime now lazy-loads Python source files:
 - the default calculator tab is loaded immediately,
 - other calculator modules are fetched only when you click their tab for the first time.
 
-For marimo, run
+For the local marimo notebook, run
 
 ```bash
 marimo run ./marimo
@@ -84,8 +84,7 @@ conda run --no-capture-output -n calc python -m py_compile \
   app/registry.py \
   app/calculators/__init__.py \
   app/calculators/cavity_mode.py \
-  app/calculators/gaussian_beam.py \
-  app/calculators/marimo.py
+  app/calculators/gaussian_beam.py
 ```
 
 And with direct execution of the registry:
@@ -97,6 +96,5 @@ from app.registry import list_calculators, get_calculator_schema, run_calculator
 print([c["id"] for c in list_calculators()])
 print(run_calculator("cavity-mode", get_calculator_schema("cavity-mode")["default_state"])["ok"])
 print(run_calculator("gaussian-beam", get_calculator_schema("gaussian-beam")["default_state"])["ok"])
-print(run_calculator("marimo", get_calculator_schema("marimo")["default_state"])["plot"]["external_url"])
 PY
 ```
