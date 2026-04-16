@@ -62,7 +62,7 @@ function computeYRange(plot, mirrorY) {
 function buildTraces(plot, mirrorY) {
   const traces = [];
   for (const trace of plot.traces || []) {
-    traces.push({
+    const primary = {
       x: trace.x_mm,
       y: trace.y_um,
       type: "scatter",
@@ -73,7 +73,9 @@ function buildTraces(plot, mirrorY) {
       hoverinfo: "skip",
       line: { color: trace.color, width: 4, dash: trace.dash || "solid" },
       opacity: 1,
-    });
+    };
+    if (trace.showlegend === false) primary.showlegend = false;
+    traces.push(primary);
     if (mirrorY) {
       traces.push({
         x: trace.x_mm,

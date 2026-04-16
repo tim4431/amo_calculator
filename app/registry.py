@@ -44,6 +44,18 @@ CALCULATOR_SPECS: dict[str, dict[str, Any]] = {
             "app/calculators/gaussian_beam.py",
         ],
     },
+    "gaussian-clipping": {
+        "id": "gaussian-clipping",
+        "title": "Gaussian Clipping",
+        "description": "Power of a decentered Gaussian beam transmitted through a circular aperture.",
+        "layout": "simple_form",
+        "module": "app.calculators.gaussian_clipping",
+        "class_name": "GaussianClippingCalculator",
+        "python_files": [
+            "core/gaussian_clipping.py",
+            "app/calculators/gaussian_clipping.py",
+        ],
+    },
 }
 
 

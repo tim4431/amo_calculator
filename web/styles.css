@@ -228,6 +228,56 @@ h1 {
   font-size: 0.92rem;
 }
 
+.clipping-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) 1fr;
+  gap: 24px;
+  align-items: start;
+}
+
+.clipping-left {
+  display: grid;
+  gap: 18px;
+}
+
+.clipping-controls {
+  display: grid;
+  gap: 14px;
+}
+
+.clipping-metrics {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin: 0;
+}
+
+.clipping-right {
+  min-width: 0;
+}
+
+.clipping-plot {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  max-height: 70vh;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid var(--panel-border);
+  border-radius: 18px;
+  padding: 8px;
+}
+
+.clipping-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+@media (max-width: 820px) {
+  .clipping-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .hero-panel {
   display: grid;
   gap: 18px;

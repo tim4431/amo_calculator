@@ -17,6 +17,7 @@
 import { createExternalLinkTab } from "./external_link_ui.js";
 import { createCavityModeTab } from "./cavity_mode_ui.js";
 import { createSimpleCalculatorTab } from "./simple_calculator_ui.js";
+import { createGaussianClippingTab } from "./gaussian_clipping_ui.js";
 
 
 export const TAB_REGISTRY = [
@@ -38,6 +39,12 @@ export const TAB_REGISTRY = [
     title: "Gaussian Beam",
     source: "python",
     createTab: createSimpleCalculatorTab,
+  },
+  {
+    id: "gaussian-clipping",
+    title: "Gaussian Clipping",
+    source: "python",
+    createTab: createGaussianClippingTab,
   },
 ];
 
