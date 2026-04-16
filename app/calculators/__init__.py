@@ -1,7 +1,27 @@
 """Calculator implementations exposed to the browser runtime."""
 
-from .cavity_mode import CavityModeCalculator
-from .gaussian_beam import GaussianBeamCalculator
-from .marimo import MarimoCalculator
+from __future__ import annotations
+
+from importlib import import_module
+
 
 __all__ = ["CavityModeCalculator", "GaussianBeamCalculator", "MarimoCalculator"]
+
+_MODULE_BY_NAME = {
+    "CavityModeCalculator": ".cavity_mode",
+    "GaussianBeamCalculator": ".gaussian_beam",
+    "MarimoCalculator": ".marimo",
+}
+
+
+def __getattr__(name: str):
+    try:
+        module_name = _MODULE_BY_NAME[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+    module = import_module(module_name, __name__)
+    return getattr(module, name)
+
+
+def __dir__() -> list[str]:
+    return sorted(__all__)

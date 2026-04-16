@@ -96,6 +96,7 @@ These files turn the project into a deployable static site.
 Important pieces:
 
 - `index.html`
+- `python_manifest.json`
 - `scripts/build_pages_site.py`
 - `.github/workflows/pages.yml`
 
@@ -105,15 +106,29 @@ The browser runtime works as follows.
 
 1. `index.html` loads the static frontend.
 2. `web/app.js` loads Pyodide in the browser and imports the shared frontend modules it needs.
-3. The frontend fetches Python source files from the repository and writes them into Pyodide's in-memory filesystem.
+3. The frontend fetches `python_manifest.json` and writes only the shared Python runtime files into Pyodide's in-memory filesystem.
 4. The frontend imports `app.registry`.
-5. The frontend asks the registry for:
-   - the list of calculators,
+5. The frontend asks the registry for the list of calculators.
+6. The frontend loads the default calculator's Python files on demand, then asks the registry for:
    - the schema for the active calculator,
    - the result of evaluating the current state.
-6. The frontend renders the returned JSON, including plot data, scene data, and optional metric cards.
+7. When the user clicks a different calculator tab for the first time, the frontend fetches only that calculator's Python files, writes them into Pyodide, and then requests its schema and result.
+8. The frontend renders the returned JSON, including plot data, scene data, and optional metric cards.
 
 No backend server is required for the normal user path.
+
+### Lazy Python Loading
+
+The browser runtime does not eagerly load every calculator module at startup.
+
+Instead:
+
+- `python_manifest.json` is split into shared files and per-calculator files,
+- `app.registry` exposes lightweight calculator metadata without importing every wrapper module,
+- the active default tab is loaded immediately,
+- other calculators are loaded only when their tab is first activated.
+
+This keeps initial page load smaller while preserving the same calculator contract.
 
 ## Calculator Contract
 
@@ -178,6 +193,8 @@ Because the UI runs Python through Pyodide, deployment is as simple as serving s
 ### Multi-calculator Support
 
 The registry gives every calculator the same entry contract. This makes it easy to add more tabs without redesigning the frontend each time.
+
+The current registry also keeps startup light by storing calculator metadata separately from the actual wrapper imports, so adding more calculators does not automatically force every Python file to load on first page visit.
 
 ### Frontend Reuse
 

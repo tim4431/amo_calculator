@@ -47,6 +47,12 @@ Then open:
 http://localhost:8000
 ```
 
+The browser runtime now lazy-loads Python source files:
+
+- shared runtime files are loaded at startup,
+- the default calculator tab is loaded immediately,
+- other calculator modules are fetched only when you click their tab for the first time.
+
 For marimo, run
 
 ```bash

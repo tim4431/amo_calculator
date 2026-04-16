@@ -1,12 +1,33 @@
 {
+  "common_python_files": [
+    "core/__init__.py",
+    "app/__init__.py",
+    "app/base.py",
+    "app/registry.py",
+    "app/calculators/__init__.py"
+  ],
+  "calculator_python_files": {
+    "cavity-mode": [
+      "core/cavity_mode.py",
+      "core/gaussian_beam.py",
+      "app/calculators/cavity_mode.py"
+    ],
+    "gaussian-beam": [
+      "core/gaussian_beam.py",
+      "app/calculators/gaussian_beam.py"
+    ],
+    "marimo": [
+      "app/calculators/marimo.py"
+    ]
+  },
   "python_files": [
     "core/__init__.py",
-    "core/gaussian_beam.py",
-    "core/cavity_mode.py",
     "app/__init__.py",
     "app/base.py",
     "app/registry.py",
     "app/calculators/__init__.py",
+    "core/cavity_mode.py",
+    "core/gaussian_beam.py",
     "app/calculators/cavity_mode.py",
     "app/calculators/gaussian_beam.py",
     "app/calculators/marimo.py"

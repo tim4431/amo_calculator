@@ -26,17 +26,23 @@ TREE_DIRS = [
 
 
 def generate_python_manifest(root: Path) -> None:
-    """Write python_manifest.json at the repo root from BROWSER_PYTHON_FILES in the registry.
+    """Write python_manifest.json at the repo root from the browser registry manifest.
 
     The file is committed to the repo so that local development (python3 -m http.server)
     works without running the build script first. The build script copies it to _site/.
     """
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
-    from app.registry import BROWSER_PYTHON_FILES  # noqa: PLC0415
-    manifest_data = json.dumps({"python_files": BROWSER_PYTHON_FILES}, indent=2) + "\n"
+    from app.registry import browser_python_manifest  # noqa: PLC0415
+
+    manifest = browser_python_manifest()
+    manifest_data = json.dumps(manifest, indent=2) + "\n"
     (root / "python_manifest.json").write_text(manifest_data)
-    print(f"Generated python_manifest.json ({len(BROWSER_PYTHON_FILES)} files)")
+    print(
+        "Generated python_manifest.json "
+        f"({len(manifest['common_python_files'])} common, "
+        f"{len(manifest['python_files'])} total files)"
+    )
 
 
 def main() -> None:

@@ -73,9 +73,24 @@ This is the step that makes it appear as a new browser tab.
 
 In practice, registration is usually:
 
-- importing the new wrapper class,
-- constructing an instance,
-- adding it to the `CALCULATORS` dictionary.
+- adding a metadata entry to `CALCULATOR_SPECS`,
+- pointing that entry at the wrapper module and class name,
+- listing the calculator-specific Python files in that entry's `python_files`.
+
+The frontend now lazy-loads calculator modules.
+
+That means registration is not only about making the tab visible. It is also how
+the browser knows which Python files should be fetched when that calculator tab
+is first opened.
+
+The runtime behavior is:
+
+- shared runtime files load at startup,
+- the default calculator tab loads immediately,
+- other calculators load only when their tab is first activated.
+
+If you forget to include a calculator file in the registry metadata, the tab may
+appear correctly but fail the first time it is opened in the browser.
 
 ## Step 4: Decide Whether The Existing Frontend Layout Is Enough
 
@@ -192,8 +207,9 @@ You might do the following.
    - a call into `core.stark_shift`,
    - formatted plot data.
 3. Import and register `StarkShiftCalculator` in `app/registry.py`.
-4. If needed, add a focused frontend module in `web/` for any special layout behavior and register it in `web/calculator_ui_registry.js`.
-5. Refresh the browser app and verify that a new tab appears.
+4. Add the calculator's Python files to its `CALCULATOR_SPECS[...]` entry so the browser can lazy-load them.
+5. If needed, add a focused frontend module in `web/` for any special layout behavior and register it in `web/calculator_ui_registry.js`.
+6. Refresh the browser app and verify that a new tab appears.
 
 ## When To Avoid Running In The Browser
 

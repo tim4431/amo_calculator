@@ -15,13 +15,14 @@ async function fetchPythonManifest() {
   if (!response.ok) {
     throw new Error(`Failed to fetch python_manifest.json: ${response.status}`);
   }
-  const manifest = await response.json();
-  return manifest.python_files;
+  return response.json();
 }
 
 
 const appState = {
   pyodide: null,
+  pythonManifest: null,
+  loadedPythonFiles: new Set(),
   calculators: [],
   schemas: new Map(),
   states: new Map(),
@@ -125,14 +126,11 @@ function showMessages(messages) {
 }
 
 
-async function loadPyodideRuntime() {
-  setStatus("Loading Pyodide...", "busy");
-  const pyodide = await loadPyodide({ indexURL: PYODIDE_INDEX_URL });
-  setStatus("Loading numpy and scipy...", "busy");
-  await pyodide.loadPackage(["numpy", "scipy"]);
-
-  const pythonFiles = await fetchPythonManifest();
+async function loadPythonFiles(pyodide, pythonFiles) {
   for (const relativePath of pythonFiles) {
+    if (appState.loadedPythonFiles.has(relativePath)) {
+      continue;
+    }
     setStatus(`Loading ${relativePath}...`, "busy");
     const response = await fetch(relativePath);
     if (!response.ok) {
@@ -142,7 +140,39 @@ async function loadPyodideRuntime() {
     const fsPath = `/${relativePath}`;
     ensureDirectory(pyodide, fsPath.split("/").slice(0, -1).join("/"));
     pyodide.FS.writeFile(fsPath, source, { encoding: "utf8" });
+    appState.loadedPythonFiles.add(relativePath);
   }
+}
+
+
+function pythonFilesForCalculator(calculatorId) {
+  return appState.pythonManifest?.calculator_python_files?.[calculatorId] || [];
+}
+
+
+async function ensureCalculatorLoaded(calculatorId) {
+  if (!calculatorId || appState.schemas.has(calculatorId)) {
+    return;
+  }
+
+  await loadPythonFiles(appState.pyodide, pythonFilesForCalculator(calculatorId));
+  const schema = pyodideCallGetSchema(calculatorId);
+  appState.schemas.set(calculatorId, schema);
+  if (!appState.states.has(calculatorId)) {
+    appState.states.set(calculatorId, deepCopy(schema.default_state));
+  }
+}
+
+
+async function loadPyodideRuntime() {
+  setStatus("Loading Pyodide...", "busy");
+  const pyodide = await loadPyodide({ indexURL: PYODIDE_INDEX_URL });
+  setStatus("Loading numpy and scipy...", "busy");
+  await pyodide.loadPackage(["numpy", "scipy"]);
+
+  appState.pythonManifest = await fetchPythonManifest();
+  const commonPythonFiles = appState.pythonManifest.common_python_files || appState.pythonManifest.python_files || [];
+  await loadPythonFiles(pyodide, commonPythonFiles);
 
   pyodide.runPython(`
 import sys
@@ -206,15 +236,14 @@ async function initializeApplication() {
   try {
     await loadPyodideRuntime();
     appState.calculators = pyodideCallListCalculators();
-    for (const calculator of appState.calculators) {
-      const schema = pyodideCallGetSchema(calculator.id);
-      appState.schemas.set(calculator.id, schema);
-      appState.states.set(calculator.id, deepCopy(schema.default_state));
-    }
-    appState.activeCalculatorId = appState.calculators.length ? appState.calculators[0].id : null;
+    const defaultCalculator = appState.calculators.find((calculator) => !calculator.tab_url) || appState.calculators[0] || null;
+    appState.activeCalculatorId = defaultCalculator ? defaultCalculator.id : null;
+    await ensureCalculatorLoaded(appState.activeCalculatorId);
     uiRegistry.clearTransientState();
     renderApp();
-    await recomputeActiveCalculator();
+    if (appState.activeCalculatorId && !defaultCalculator?.tab_url) {
+      await recomputeActiveCalculator();
+    }
   } catch (error) {
     console.error(error);
     setStatus("Runtime failed", "error");
@@ -233,6 +262,7 @@ async function recomputeActiveCalculator() {
   if (!calculatorId || !appState.pyodide) {
     return;
   }
+  await ensureCalculatorLoaded(calculatorId);
   setStatus("Running calculator...", "busy");
   try {
     const result = pyodideCallRunCalculator(calculatorId, getActiveState());
@@ -286,6 +316,7 @@ function renderTabs() {
       }
       uiRegistry.clearTransientState();
       appState.activeCalculatorId = calculator.id;
+      await ensureCalculatorLoaded(calculator.id);
       renderApp();
       if (!appState.results.has(calculator.id)) {
         await recomputeActiveCalculator();
