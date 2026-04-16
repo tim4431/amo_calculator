@@ -2,35 +2,29 @@ import {
   clamp,
   deepCopy,
   element,
-  formatCompactNumber,
   formatNumber,
   getValueByPath,
   hexToRgba,
+  linspace,
   renderField,
   setValueByPath,
 } from "./ui_common.js";
 import {
-  boundaryPropertyDescriptors,
-  buildComponentPalette,
   buildElementPlotTraces,
-  createComponentIcon,
-  elementPropertyDescriptors,
-  gapPropertyDescriptors,
+  createOpticalAxisController,
 } from "./cavity_mode_ui.js";
 
 const PYODIDE_INDEX_URL = "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/";
 
-const PYTHON_FILES = [
-  "core/__init__.py",
-  "core/gaussian_beam.py",
-  "core/cavity_mode.py",
-  "app/__init__.py",
-  "app/base.py",
-  "app/registry.py",
-  "app/calculators/__init__.py",
-  "app/calculators/cavity_mode.py",
-  "app/calculators/gaussian_beam.py",
-];
+
+async function fetchPythonManifest() {
+  const response = await fetch("python_manifest.json");
+  if (!response.ok) {
+    throw new Error(`Failed to fetch python_manifest.json: ${response.status}`);
+  }
+  const manifest = await response.json();
+  return manifest.python_files;
+}
 
 const appState = {
   pyodide: null,
@@ -42,7 +36,6 @@ const appState = {
   computeTimer: null,
   plotTraceMeta: [],
   currentHoverSegmentId: null,
-  inlinePropertyEditor: null,
   plotPointerMoveHandler: null,
   plotPointerLeaveHandler: null,
   activeModeOverlayIndices: null,
@@ -90,141 +83,8 @@ function setStatus(message, kind = "") {
 }
 
 
-function clearInlinePropertyEditor() {
-  appState.inlinePropertyEditor = null;
-}
-
-
-function setElementFieldValue(item, key, value) {
-  if (key === "reflection") {
-    const reflection = clamp(Number(value), 0, 1);
-    item.reflection = reflection;
-    return;
-  }
-  if (key === "transmission") {
-    const transmission = clamp(Number(value), 0, 1);
-    item.reflection = Number((1 - transmission).toFixed(12));
-    return;
-  }
-  item[key] = value;
-}
-
-
-function nextUniqueId(kind, elements) {
-  const prefix = {
-    curved_surface: "mirror",
-    plane_surface: "surface",
-    lens: "lens",
-  }[kind] || "element";
-  const used = new Set(elements.map((item) => item.id));
-  let count = elements.filter((item) => item.kind === kind).length + 1;
-  let candidate = `${prefix}-${count}`;
-  while (used.has(candidate)) {
-    count += 1;
-    candidate = `${prefix}-${count}`;
-  }
-  return candidate;
-}
-
-
-function defaultElement(kind, state) {
-  const labels = {
-    curved_surface: "Curved Surface",
-    plane_surface: "Plane Surface",
-    lens: "Lens",
-  };
-  const count = state.elements.filter((item) => item.kind === kind).length + 1;
-  const base = {
-    id: nextUniqueId(kind, state.elements),
-    kind,
-    label: `${labels[kind] || "Element"} ${count}`,
-    reflection: kind === "curved_surface" ? 0.95 : 0.0,
-  };
-  if (kind === "curved_surface") {
-    base.radius_mm = 50.0;
-  }
-  if (kind === "lens") {
-    base.focal_length_mm = 50.0;
-  }
-  return base;
-}
-
-
-function defaultGap(labelIndex, refractiveIndex = 1.0, distanceMm = 20.0) {
-  return {
-    label: `Gap ${labelIndex}`,
-    refractive_index: refractiveIndex,
-    distance_mm: distanceMm,
-  };
-}
-
-
-function defaultBoundary(side, refractiveIndex = 1.0, outputLengthMm = 40.0) {
-  return {
-    label: side === "left" ? "Left boundary" : "Right boundary",
-    refractive_index: refractiveIndex,
-    output_length_mm: outputLengthMm,
-  };
-}
-
-
-function renumberGapLabels(state) {
-  state.gaps.forEach((gap, index) => {
-    gap.label = `Gap ${index + 1}`;
-  });
-}
-
-
-function reconcileEndpoints(state) {
-  const ids = (state.elements || []).map((item) => item.id);
-  const current = Array.isArray(state.globals.endpoint_ids) ? state.globals.endpoint_ids : [];
-  const normalized = [];
-  for (const value of current) {
-    if (ids.includes(value) && !normalized.includes(value)) {
-      normalized.push(value);
-    }
-  }
-  state.globals.endpoint_ids = normalized.slice(-2);
-}
-
-
-function ensureValidSelection() {
-  const calculatorState = getActiveState();
-  if (!calculatorState) {
-    clearInlinePropertyEditor();
-    return;
-  }
-
-  if (
-    appState.inlinePropertyEditor &&
-    (
-      (
-        appState.inlinePropertyEditor.entityType === "element" &&
-        (
-          appState.inlinePropertyEditor.index >= calculatorState.elements.length ||
-          !calculatorState.elements[appState.inlinePropertyEditor.index] ||
-          calculatorState.elements[appState.inlinePropertyEditor.index].kind !== appState.inlinePropertyEditor.kind
-        )
-      ) ||
-      (
-        appState.inlinePropertyEditor.entityType === "gap" &&
-        appState.inlinePropertyEditor.index >= calculatorState.gaps.length
-      ) ||
-      (
-        appState.inlinePropertyEditor.entityType === "boundary" &&
-        !["left", "right"].includes(appState.inlinePropertyEditor.side)
-      )
-    )
-  ) {
-    clearInlinePropertyEditor();
-  }
-}
-
-
 function commitState(nextState, { rerender = true, recompute = true } = {}) {
-  reconcileEndpoints(nextState);
   appState.states.set(appState.activeCalculatorId, nextState);
-  ensureValidSelection();
   if (rerender) {
     renderApp();
   }
@@ -241,170 +101,13 @@ function updateGlobalField(path, value) {
 }
 
 
-function updateElementField(index, key, value) {
-  const nextState = deepCopy(getActiveState());
-  setElementFieldValue(nextState.elements[index], key, value);
-  commitState(nextState);
-}
-
-
-function updateGapField(index, key, value) {
-  const nextState = deepCopy(getActiveState());
-  nextState.gaps[index][key] = value;
-  commitState(nextState);
-}
-
-
-function updateBoundaryField(side, key, value) {
-  const nextState = deepCopy(getActiveState());
-  if (!nextState.boundaries) {
-    nextState.boundaries = {
-      left: defaultBoundary("left"),
-      right: defaultBoundary("right"),
-    };
-  }
-  nextState.boundaries[side][key] = value;
-  commitState(nextState);
-}
-
-
-function toggleEndpoint(index) {
-  const nextState = deepCopy(getActiveState());
-  const element = nextState.elements[index];
-  const elementId = element ? element.id : null;
-  if (!elementId) {
-    return;
-  }
-
-  const endpoints = Array.isArray(nextState.globals.endpoint_ids)
-    ? [...nextState.globals.endpoint_ids]
-    : [];
-  const existingIndex = endpoints.indexOf(elementId);
-  if (existingIndex >= 0) {
-    endpoints.splice(existingIndex, 1);
-  } else {
-    if (endpoints.length >= 2) {
-      endpoints.shift();
-    }
-    endpoints.push(elementId);
-  }
-  nextState.globals.endpoint_ids = endpoints;
-  commitState(nextState);
-}
-
-
-function insertElementAt(zoneIndex, kind) {
-  const nextState = deepCopy(getActiveState());
-  const item = defaultElement(kind, nextState);
-  const elementCount = nextState.elements.length;
-
-  if (elementCount === 0) {
-    nextState.elements.push(item);
-  } else if (zoneIndex === 0) {
-    nextState.elements.splice(0, 0, item);
-    nextState.gaps.splice(
-      0,
-      0,
-      defaultGap(1, nextState.boundaries?.left?.refractive_index ?? 1.0),
-    );
-  } else if (zoneIndex === elementCount) {
-    nextState.elements.push(item);
-    nextState.gaps.push(
-      defaultGap(nextState.gaps.length + 1, nextState.boundaries?.right?.refractive_index ?? 1.0),
-    );
-  } else {
-    const oldGap = nextState.gaps[zoneIndex - 1] || defaultGap(zoneIndex);
-    const firstDistance = Math.max(0.1, Number(oldGap.distance_mm) / 2);
-    const secondDistance = Math.max(0.1, Number(oldGap.distance_mm) - firstDistance);
-    nextState.elements.splice(zoneIndex, 0, item);
-    nextState.gaps.splice(zoneIndex - 1, 1, {
-      label: oldGap.label,
-      refractive_index: oldGap.refractive_index,
-      distance_mm: firstDistance,
-    }, {
-      label: oldGap.label,
-      refractive_index: oldGap.refractive_index,
-      distance_mm: secondDistance,
-    });
-  }
-
-  renumberGapLabels(nextState);
-  clearInlinePropertyEditor();
-  commitState(nextState);
-}
-
-
-function moveElement(sourceIndex, zoneIndex) {
-  const nextState = deepCopy(getActiveState());
-  if (
-    sourceIndex < 0 ||
-    sourceIndex >= nextState.elements.length ||
-    zoneIndex < 0 ||
-    zoneIndex > nextState.elements.length
-  ) {
-    return;
-  }
-
-  const [item] = nextState.elements.splice(sourceIndex, 1);
-  let targetIndex = zoneIndex;
-  if (sourceIndex < zoneIndex) {
-    targetIndex -= 1;
-  }
-  nextState.elements.splice(targetIndex, 0, item);
-  clearInlinePropertyEditor();
-  commitState(nextState);
-}
-
-
-function swapElements(sourceIndex, targetIndex) {
-  const nextState = deepCopy(getActiveState());
-  if (
-    sourceIndex < 0 ||
-    sourceIndex >= nextState.elements.length ||
-    targetIndex < 0 ||
-    targetIndex >= nextState.elements.length ||
-    sourceIndex === targetIndex
-  ) {
-    return;
-  }
-  const temp = nextState.elements[sourceIndex];
-  nextState.elements[sourceIndex] = nextState.elements[targetIndex];
-  nextState.elements[targetIndex] = temp;
-  clearInlinePropertyEditor();
-  commitState(nextState);
-}
-
-
-function deleteElement(index) {
-  const nextState = deepCopy(getActiveState());
-  if (index < 0 || index >= nextState.elements.length) {
-    return;
-  }
-
-  if (nextState.elements.length === 1) {
-    nextState.elements = [];
-    nextState.gaps = [];
-  } else if (index === 0) {
-    nextState.elements.splice(0, 1);
-    nextState.gaps.splice(0, 1);
-  } else if (index === nextState.elements.length - 1) {
-    nextState.elements.splice(index, 1);
-    nextState.gaps.splice(index - 1, 1);
-  } else {
-    const leftGap = nextState.gaps[index - 1];
-    const rightGap = nextState.gaps[index];
-    nextState.elements.splice(index, 1);
-    nextState.gaps.splice(index - 1, 2, {
-      label: leftGap.label,
-      refractive_index: 0.5 * (Number(leftGap.refractive_index) + Number(rightGap.refractive_index)),
-      distance_mm: Number(leftGap.distance_mm) + Number(rightGap.distance_mm),
-    });
-  }
-
-  renumberGapLabels(nextState);
-  clearInlinePropertyEditor();
-  commitState(nextState);
-}
+const axisController = createOpticalAxisController({
+  getState: getActiveState,
+  getSchema: getActiveSchema,
+  onCommit: (nextState) => commitState(nextState),
+  onUpdateGlobal: updateGlobalField,
+  onRerender: renderApp,
+});
 
 
 function scheduleCompute() {
@@ -426,7 +129,8 @@ async function loadPyodideRuntime() {
   setStatus("Loading numpy and scipy...", "busy");
   await pyodide.loadPackage(["numpy", "scipy"]);
 
-  for (const relativePath of PYTHON_FILES) {
+  const pythonFiles = await fetchPythonManifest();
+  for (const relativePath of pythonFiles) {
     setStatus(`Loading ${relativePath}...`, "busy");
     const response = await fetch(relativePath);
     if (!response.ok) {
@@ -533,7 +237,7 @@ async function recomputeActiveCalculator() {
     if (result.normalized_state) {
       appState.states.set(calculatorId, result.normalized_state);
     }
-    ensureValidSelection();
+    axisController.ensureValidSelection();
     renderApp();
     setStatus("Python runtime ready");
   } catch (error) {
@@ -565,7 +269,7 @@ function renderTabs() {
         return;
       }
       appState.activeCalculatorId = calculator.id;
-      clearInlinePropertyEditor();
+      axisController.clearEditor();
       appState.currentHoverSegmentId = null;
       renderApp();
       if (!appState.results.has(calculator.id)) {
@@ -595,41 +299,6 @@ function renderGlobalControls() {
 }
 
 
-function renderBuilderToolbar() {
-  const schema = getActiveSchema();
-  const calculatorState = getActiveState();
-  const isOpticalAxis = Boolean(schema && schema.layout === "optical_axis");
-  if (!isOpticalAxis) {
-    dom.builderToolbar.replaceChildren();
-    dom.builderToolbar.style.display = "none";
-    return;
-  }
-
-  const fieldNodes = (schema.global_fields || []).map((field) =>
-    renderField(
-      field,
-      getValueByPath(calculatorState, field.path),
-      (nextValue) => updateGlobalField(field.path, nextValue),
-      calculatorState,
-    )
-  );
-
-  const palette = buildComponentPalette(schema, (event, kind) => {
-    event.dataTransfer.setData("text/plain", JSON.stringify({
-      source: "palette",
-      kind,
-    }));
-  });
-
-  dom.builderToolbar.replaceChildren(
-    element("div", {
-      className: "builder-toolbar-fields",
-      children: fieldNodes,
-    }),
-    palette,
-  );
-  dom.builderToolbar.style.display = "";
-}
 
 
 function renderSummary() {
@@ -680,447 +349,14 @@ function renderPlotMetrics() {
 }
 
 
-function inlineEditorMatches(editorState) {
-  return Boolean(
-    appState.inlinePropertyEditor &&
-    Object.entries(editorState).every(([key, value]) => appState.inlinePropertyEditor[key] === value)
-  );
-}
 
 
-function openInlinePropertyEditor(editorState) {
-  appState.inlinePropertyEditor = editorState;
-  renderApp();
-}
-
-
-function closeInlinePropertyEditor({ rerender = false } = {}) {
-  clearInlinePropertyEditor();
-  if (rerender) {
-    renderApp();
-  }
-}
-
-
-function commitInlinePropertyEditor(rawValue, descriptor, onCommit) {
-  const parsedValue = Number(rawValue);
-  if (!Number.isFinite(parsedValue)) {
-    closeInlinePropertyEditor({ rerender: true });
-    return;
-  }
-
-  let nextValue = parsedValue;
-  if (descriptor.minimum !== undefined) {
-    nextValue = Math.max(descriptor.minimum, nextValue);
-  }
-  if (descriptor.maximum !== undefined) {
-    nextValue = Math.min(descriptor.maximum, nextValue);
-  }
-  closeInlinePropertyEditor();
-  onCommit(nextValue);
-}
-
-
-function attachZoneDropHandlers(node, zoneIndex) {
-  node.addEventListener("dragover", (event) => {
-    event.preventDefault();
-    node.classList.add("active");
-  });
-  node.addEventListener("dragleave", () => {
-    node.classList.remove("active");
-  });
-  node.addEventListener("drop", (event) => {
-    event.preventDefault();
-    node.classList.remove("active");
-    const payload = event.dataTransfer.getData("text/plain");
-    if (!payload) {
-      return;
-    }
-    const data = JSON.parse(payload);
-    if (data.source === "palette") {
-      insertElementAt(zoneIndex, data.kind);
-    }
-    if (data.source === "element") {
-      moveElement(data.index, zoneIndex);
-    }
-  });
-}
-
-
-function attachElementSwapHandlers(node, index) {
-  node.addEventListener("dragover", (event) => {
-    event.preventDefault();
-    node.classList.add("active");
-  });
-  node.addEventListener("dragleave", () => {
-    node.classList.remove("active");
-  });
-  node.addEventListener("drop", (event) => {
-    event.preventDefault();
-    node.classList.remove("active");
-    const payload = event.dataTransfer.getData("text/plain");
-    if (!payload) {
-      return;
-    }
-    const data = JSON.parse(payload);
-    if (data.source === "element") {
-      swapElements(data.index, index);
-    }
-    if (data.source === "palette") {
-      insertElementAt(index, data.kind);
-    }
-  });
-}
-
-
-function createBoundaryCard(side, calculatorState) {
-  const boundary = calculatorState.boundaries?.[side] || defaultBoundary(side);
-  const [indexDescriptor, outputDescriptor] = boundaryPropertyDescriptors();
-  const node = element("div", {
-    className: "boundary-card gap-card",
-    children: [
-      createInlinePropertyNode({
-        editorState: {
-          entityType: "boundary",
-          side,
-          key: "refractive_index",
-        },
-        descriptor: indexDescriptor,
-        value: boundary.refractive_index,
-        onCommit: (nextValue) => updateBoundaryField(side, "refractive_index", nextValue),
-        buttonClassName: "gap-pill gap-prop-button",
-        editorClassName: "gap-pill gap-prop-editor",
-      }),
-      element("div", {
-        className: "gap-core",
-        children: [element("div", { className: "edge-label", text: boundary.label })],
-      }),
-      createInlinePropertyNode({
-        editorState: {
-          entityType: "boundary",
-          side,
-          key: "output_length_mm",
-        },
-        descriptor: outputDescriptor,
-        value: boundary.output_length_mm,
-        onCommit: (nextValue) => updateBoundaryField(side, "output_length_mm", nextValue),
-        buttonClassName: "gap-pill gap-prop-button",
-        editorClassName: "gap-pill gap-prop-editor",
-      }),
-    ],
-  });
-  attachZoneDropHandlers(node, side === "left" ? 0 : calculatorState.elements.length);
-  return node;
-}
-
-
-function createGapCard(gap, index) {
-  const [indexDescriptor, distanceDescriptor] = gapPropertyDescriptors();
-  const node = element("div", {
-    className: "gap-card",
-    children: [
-      createInlinePropertyNode({
-        editorState: {
-          entityType: "gap",
-          index,
-          key: "refractive_index",
-        },
-        descriptor: indexDescriptor,
-        value: gap.refractive_index,
-        onCommit: (nextValue) => updateGapField(index, "refractive_index", nextValue),
-        buttonClassName: "gap-pill gap-prop-button",
-        editorClassName: "gap-pill gap-prop-editor",
-      }),
-      element("div", {
-        className: "gap-core",
-        children: [element("div", { className: "edge-label", text: gap.label })],
-      }),
-      createInlinePropertyNode({
-        editorState: {
-          entityType: "gap",
-          index,
-          key: "distance_mm",
-        },
-        descriptor: distanceDescriptor,
-        value: gap.distance_mm,
-        onCommit: (nextValue) => updateGapField(index, "distance_mm", nextValue),
-        buttonClassName: "gap-pill gap-prop-button",
-        editorClassName: "gap-pill gap-prop-editor",
-      }),
-    ],
-  });
-  attachZoneDropHandlers(node, index + 1);
-  return node;
-}
-
-
-function formatInlinePropertyValue(value, descriptor) {
-  const formatted = formatCompactNumber(value, descriptor.digits || 3);
-  return descriptor.suffix ? `${formatted} ${descriptor.suffix}` : formatted;
-}
-
-
-function createInlinePropertyDisplay({ editorState, descriptor, value, onOpen, className = "element-prop-button" }) {
-  const propertyButton = element("button", {
-    className,
-    attrs: { type: "button", draggable: "false" },
-    children: [
-      element("span", { className: "element-prop-label", text: `${descriptor.label} =` }),
-      element("span", {
-        className: "element-prop-value",
-        text: formatInlinePropertyValue(value, descriptor),
-      }),
-    ],
-  });
-  propertyButton.addEventListener("click", (event) => {
-    event.stopPropagation();
-    onOpen(editorState);
-  });
-  propertyButton.addEventListener("pointerdown", (event) => event.stopPropagation());
-  propertyButton.addEventListener("dragstart", (event) => event.preventDefault());
-  return propertyButton;
-}
-
-
-function createInlinePropertyEditor({ editorState, descriptor, value, onCommit, className = "element-prop-editor" }) {
-  const editor = element("div", {
-    className,
-    attrs: { tabindex: "-1" },
-  });
-  const label = element("span", { className: "element-prop-label", text: `${descriptor.label} =` });
-  const input = element("input", {
-    className: "element-prop-input",
-    attrs: {
-      type: "number",
-      step: descriptor.step || 0.01,
-      value: formatCompactNumber(value, 6),
-      min: descriptor.minimum,
-      max: descriptor.maximum,
-    },
-  });
-
-  const commit = () => {
-    commitInlinePropertyEditor(input.value, descriptor, onCommit);
-  };
-
-  const cancel = () => {
-    closeInlinePropertyEditor({ rerender: true });
-  };
-
-  editor.append(label, input);
-  if (descriptor.suffix) {
-    editor.append(element("span", { className: "element-prop-suffix", text: descriptor.suffix }));
-  }
-  editor.addEventListener("click", (event) => event.stopPropagation());
-  editor.addEventListener("pointerdown", (event) => event.stopPropagation());
-  editor.addEventListener("dragstart", (event) => event.preventDefault());
-  editor.addEventListener("focusout", (event) => {
-    if (event.relatedTarget && editor.contains(event.relatedTarget)) {
-      return;
-    }
-    commit();
-  });
-  input.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      commit();
-    }
-    if (event.key === "Escape") {
-      event.preventDefault();
-      cancel();
-    }
-  });
-  input.addEventListener("pointerdown", (event) => event.stopPropagation());
-  input.addEventListener("dragstart", (event) => event.preventDefault());
-
-  window.requestAnimationFrame(() => {
-    input.focus();
-    input.select();
-  });
-
-  return editor;
-}
-
-
-function createInlinePropertyNode({ editorState, descriptor, value, onCommit, buttonClassName, editorClassName }) {
-  if (inlineEditorMatches(editorState)) {
-    return createInlinePropertyEditor({
-      editorState,
-      descriptor,
-      value,
-      onCommit,
-      className: editorClassName || "element-prop-editor",
-    });
-  }
-  return createInlinePropertyDisplay({
-    editorState,
-    descriptor,
-    value,
-    onOpen: openInlinePropertyEditor,
-    className: buttonClassName || "element-prop-button",
-  });
-}
-
-
-function createElementCard(item, index, calculatorState) {
-  const endpoints = calculatorState.globals.endpoint_ids || [];
-  const transmission = Number((1 - Number(item.reflection || 0)).toFixed(12));
-
-  const titleInput = element("input", {
-    className: "element-title-input",
-    attrs: { type: "text", value: item.label, draggable: "false" },
-  });
-  titleInput.addEventListener("click", (event) => event.stopPropagation());
-  titleInput.addEventListener("pointerdown", (event) => event.stopPropagation());
-  titleInput.addEventListener("dragstart", (event) => event.preventDefault());
-  titleInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      titleInput.blur();
-    }
-  });
-  titleInput.addEventListener("change", () => {
-    const nextLabel = titleInput.value.trim() || item.label;
-    updateElementField(index, "label", nextLabel);
-  });
-  titleInput.addEventListener("blur", () => {
-    const nextLabel = titleInput.value.trim() || item.label;
-    if (nextLabel !== item.label) {
-      updateElementField(index, "label", nextLabel);
-    } else {
-      titleInput.value = item.label;
-    }
-  });
-
-  const deleteButton = element("button", {
-    className: "icon-button",
-    html: "&times;",
-    attrs: { type: "button", title: "Delete element", "aria-label": "Delete element" },
-  });
-  deleteButton.addEventListener("click", (event) => {
-    event.stopPropagation();
-    deleteElement(index);
-  });
-  deleteButton.addEventListener("dragstart", (event) => event.preventDefault());
-
-  const endpointButton = element("button", {
-    className: `endpoint-button${endpoints.includes(item.id) ? " active" : ""}`,
-    text: endpoints.includes(item.id) ? "Endpoint" : "Set endpoint",
-    attrs: { type: "button" },
-  });
-  endpointButton.addEventListener("click", (event) => {
-    event.stopPropagation();
-    toggleEndpoint(index);
-  });
-  endpointButton.addEventListener("dragstart", (event) => event.preventDefault());
-
-  const node = element("div", {
-    className: "element-card",
-    attrs: { draggable: "true" },
-    children: [
-      element("div", {
-        className: "element-header",
-        children: [titleInput, deleteButton],
-      }),
-      element("div", {
-        className: "element-kind-row",
-        children: [
-          createComponentIcon(item.kind, item.label, "element-kind-icon", {
-            flipX: item.kind === "curved_surface" && Number(item.radius_mm || 0) < 0,
-          }),
-          element("div", { className: "element-kind", text: item.kind.replaceAll("_", " ") }),
-        ],
-      }),
-      element("div", {
-        className: "element-props",
-        children: elementPropertyDescriptors(item).map((descriptor) =>
-          createInlinePropertyNode({
-            editorState: {
-              entityType: "element",
-              index,
-              key: descriptor.key,
-              kind: item.kind,
-            },
-            descriptor: {
-              ...descriptor,
-              kind: descriptor.kind === "length" ? "length_mm" : descriptor.kind,
-              minimum: descriptor.min,
-              maximum: descriptor.max,
-              suffix: descriptor.kind === "length" ? "mm" : "",
-            },
-            value: descriptor.key === "transmission" ? transmission : item[descriptor.key],
-            onCommit: (nextValue) => updateElementField(index, descriptor.key, nextValue),
-          })
-        ),
-      }),
-      element("div", {
-        className: "element-footer",
-        children: [endpointButton],
-      }),
-    ],
-  });
-
-  node.addEventListener("dragstart", (event) => {
-    node.classList.add("dragging");
-    event.dataTransfer.setData("text/plain", JSON.stringify({
-      source: "element",
-      index,
-    }));
-  });
-  node.addEventListener("dragend", () => {
-    node.classList.remove("dragging");
-  });
-
-  attachElementSwapHandlers(node, index);
-  return node;
-}
-
-
-function renderAxisBuilder() {
-  const schema = getActiveSchema();
-  const calculatorState = getActiveState();
-  if (!schema || schema.layout !== "optical_axis") {
-    dom.builderPanel.style.display = "none";
-    return;
-  }
-
-  dom.builderPanel.style.display = "";
-
-  const axisShell = element("div", { className: "axis-shell" });
-  const track = element("div", { className: "axis-track" });
-
-  if (!calculatorState.elements.length) {
-    const emptyDrop = element("div", {
-      className: "empty-drop-target",
-      children: [
-        element("div", {
-          html: "<strong>Drag a component here</strong><br>Start by dropping a surface or lens onto the optical axis.",
-        }),
-      ],
-    });
-    attachZoneDropHandlers(emptyDrop, 0);
-    track.append(emptyDrop);
-  } else {
-    track.append(createBoundaryCard("left", calculatorState));
-    calculatorState.elements.forEach((item, index) => {
-      track.append(createElementCard(item, index, calculatorState));
-      if (index < calculatorState.gaps.length) {
-        track.append(createGapCard(calculatorState.gaps[index], index));
-      }
-    });
-    track.append(createBoundaryCard("right", calculatorState));
-  }
-
-  axisShell.append(track);
-  dom.builder.replaceChildren(
-    element("div", {
-      className: "builder-layout",
-      children: [axisShell],
-    })
-  );
-}
 
 
 function renderMessages() {
+  const schema = getActiveSchema();
+  const calculator = appState.calculators.find((item) => item.id === appState.activeCalculatorId);
+  const layoutConfig = schema && calculator ? getLayoutConfig(schema.layout, calculator.title) : null;
   const result = getActiveResult();
   const messages = [];
   if (!result) {
@@ -1141,10 +377,10 @@ function renderMessages() {
         text: warning,
       }));
     }
-    if (result.ok) {
+    if (result.ok && layoutConfig) {
       messages.push(element("div", {
         className: "message info",
-        text: "Edit element, gap, and boundary parameters directly in place. Move anywhere across the plot to inspect the active interval and its local Gaussian-beam data.",
+        text: layoutConfig.successHint,
       }));
     }
   }
@@ -1155,19 +391,6 @@ function renderMessages() {
     }));
   }
   showMessages(messages);
-}
-
-
-function linspace(start, stop, count) {
-  if (count <= 1) {
-    return [start];
-  }
-  const values = [];
-  const step = (stop - start) / (count - 1);
-  for (let index = 0; index < count; index += 1) {
-    values.push(start + step * index);
-  }
-  return values;
 }
 
 
@@ -1820,6 +1043,26 @@ function renderPlot() {
 }
 
 
+function getLayoutConfig(layout, calculatorTitle) {
+  if (layout === "optical_axis") {
+    return {
+      showHero: false,
+      plotSectionTitle: "Cavity mode",
+      builderHint: "Drag components onto the axis, drop onto other elements to swap them, edit parameters directly in place, and move across the plot to inspect the active interval.",
+      successHint: "Edit element, gap, and boundary parameters directly in place. Move anywhere across the plot to inspect the active interval and its local Gaussian-beam data.",
+      hasAxisBuilder: true,
+    };
+  }
+  return {
+    showHero: true,
+    plotSectionTitle: calculatorTitle,
+    builderHint: "Adjust the control values to run the selected calculator in the browser-side Python runtime.",
+    successHint: "Calculator ran successfully.",
+    hasAxisBuilder: false,
+  };
+}
+
+
 function renderApp() {
   const schema = getActiveSchema();
   const calculator = appState.calculators.find((item) => item.id === appState.activeCalculatorId);
@@ -1829,21 +1072,26 @@ function renderApp() {
     return;
   }
 
+  const layoutConfig = getLayoutConfig(schema.layout, calculator.title);
   dom.calculatorTitle.textContent = calculator.title;
   dom.calculatorDescription.textContent = calculator.description;
-  dom.heroPanel.style.display = schema.layout === "optical_axis" ? "none" : "";
-  dom.calculatorHeroCopy.style.display = schema.layout === "optical_axis" ? "none" : "";
-  dom.plotSectionTitle.textContent = schema.layout === "optical_axis" ? "Cavity mode" : calculator.title;
-  dom.builderHint.textContent =
-    schema.layout === "optical_axis"
-      ? "Drag components onto the axis, drop onto other elements to swap them, edit parameters directly in place, and move across the plot to inspect the active interval."
-      : "Adjust the control values to run the selected calculator in the browser-side Python runtime.";
+  dom.heroPanel.style.display = layoutConfig.showHero ? "" : "none";
+  dom.calculatorHeroCopy.style.display = layoutConfig.showHero ? "" : "none";
+  dom.plotSectionTitle.textContent = layoutConfig.plotSectionTitle;
+  dom.builderHint.textContent = layoutConfig.builderHint;
 
   renderGlobalControls();
-  renderBuilderToolbar();
   renderSummary();
-  renderAxisBuilder();
   renderPlot();
+  if (layoutConfig.hasAxisBuilder) {
+    dom.builderPanel.style.display = "";
+    axisController.renderBuilderToolbar(dom.builderToolbar);
+    axisController.renderAxisBuilder(dom.builderPanel, dom.builder);
+  } else {
+    dom.builderToolbar.replaceChildren();
+    dom.builderToolbar.style.display = "none";
+    dom.builderPanel.style.display = "none";
+  }
   renderPlotMetrics();
   renderMessages();
 }

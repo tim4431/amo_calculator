@@ -1,0 +1,13 @@
+{
+  "python_files": [
+    "core/__init__.py",
+    "core/gaussian_beam.py",
+    "core/cavity_mode.py",
+    "app/__init__.py",
+    "app/base.py",
+    "app/registry.py",
+    "app/calculators/__init__.py",
+    "app/calculators/cavity_mode.py",
+    "app/calculators/gaussian_beam.py"
+  ]
+}

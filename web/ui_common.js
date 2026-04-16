@@ -78,6 +78,19 @@ export function clamp(value, minimum, maximum) {
 }
 
 
+export function linspace(start, stop, count) {
+  if (count <= 1) {
+    return [start];
+  }
+  const values = [];
+  const step = (stop - start) / (count - 1);
+  for (let index = 0; index < count; index += 1) {
+    values.push(start + step * index);
+  }
+  return values;
+}
+
+
 export function hexToRgba(hexColor, alpha) {
   const hex = hexColor.replace("#", "");
   const normalized = hex.length === 3

@@ -9,6 +9,21 @@ from .base import CalculatorDefinition, to_serializable
 from .calculators import CavityModeCalculator, GaussianBeamCalculator
 
 
+# Single source of truth for which Python files the browser runtime must load.
+# When adding a new calculator, add its core/ and app/calculators/ files here.
+BROWSER_PYTHON_FILES: list[str] = [
+    "core/__init__.py",
+    "core/gaussian_beam.py",
+    "core/cavity_mode.py",
+    "app/__init__.py",
+    "app/base.py",
+    "app/registry.py",
+    "app/calculators/__init__.py",
+    "app/calculators/cavity_mode.py",
+    "app/calculators/gaussian_beam.py",
+]
+
+
 CALCULATORS: dict[str, CalculatorDefinition] = {
     calculator.calculator_id: calculator
     for calculator in (
@@ -54,6 +69,7 @@ def run_calculator_json(calculator_id: str, state_json: str) -> str:
 
 
 __all__ = [
+    "BROWSER_PYTHON_FILES",
     "CALCULATORS",
     "get_calculator_schema",
     "get_calculator_schema_json",
