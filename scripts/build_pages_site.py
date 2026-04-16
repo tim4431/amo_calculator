@@ -19,6 +19,7 @@ TREE_DIRS = [
     "core",
     "web",
     "app",
+    "assets",
 ]
 
 

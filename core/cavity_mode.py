@@ -31,6 +31,10 @@ from dataclasses import dataclass, field
 from typing import Union
 
 import numpy as np
+try:
+    from scipy.constants import c as SPEED_OF_LIGHT
+except Exception:  # pragma: no cover - fallback for environments without scipy
+    SPEED_OF_LIGHT = 299792458.0
 
 from .gaussian_beam import GaussianBeam
 
@@ -92,6 +96,74 @@ class ABCDMatrix:
     @property
     def trace(self) -> float:
         return self.A + self.D
+
+    @property
+    def stability_discriminant(self) -> float:
+        """Return ``trace**2 - 4 * determinant`` for the cavity fixed-point equation.
+
+        A real ABCD matrix is strictly stable when this quantity is negative,
+        marginally stable when it vanishes, and unstable when it is positive.
+        For unit-determinant systems this reduces to the familiar
+        ``|A + D| < 2`` criterion.
+        """
+        return self.trace**2 - 4.0 * self.determinant
+
+    @property
+    def stability_parameter(self) -> float:
+        """Return the normalized half-trace used in cavity-stability diagrams.
+
+        This is ``(A + D) / (2 * sqrt(det(M)))`` when ``det(M) > 0`` and
+        ``nan`` otherwise.
+        """
+        det = self.determinant
+        if det <= 0:
+            return float("nan")
+        return self.trace / (2.0 * np.sqrt(det))
+
+    def is_stable(self, tol: float = 1e-12) -> bool:
+        """Return whether the real ABCD matrix lies inside the stable region."""
+        det = self.determinant
+        if det <= tol:
+            return False
+        return self.stability_discriminant < -tol
+
+    def is_marginally_stable(self, tol: float = 1e-12) -> bool:
+        """Return whether the matrix lies on the stability boundary."""
+        det = self.determinant
+        if det <= tol:
+            return False
+        return abs(self.stability_discriminant) <= tol
+
+    def stability_diagram(
+        self, span: float | None = None, num_points: int = 512
+    ) -> dict[str, float | bool | np.ndarray]:
+        """Return trace-determinant stability-diagram data for this matrix.
+
+        The returned boundary curve is the parabola
+        ``determinant = trace**2 / 4``, which separates stable and unstable
+        regions for real ABCD matrices. The current matrix position is included
+        so callers can plot it directly on the diagram.
+        """
+        if num_points < 2:
+            raise ValueError("num_points must be at least 2.")
+
+        trace = self.trace
+        determinant = self.determinant
+        if span is None:
+            span = max(2.5, 1.25 * abs(trace), 1.25 * np.sqrt(max(determinant, 0.0)))
+
+        trace_axis = np.linspace(-span, span, num_points, dtype=float)
+        boundary_determinant = 0.25 * trace_axis**2
+        return {
+            "trace_axis": trace_axis,
+            "boundary_determinant": boundary_determinant,
+            "trace": trace,
+            "determinant": determinant,
+            "stability_discriminant": self.stability_discriminant,
+            "stability_parameter": self.stability_parameter,
+            "stable": self.is_stable(),
+            "marginally_stable": self.is_marginally_stable(),
+        }
 
     def inverse(self) -> "ABCDMatrix":
         det = self.determinant
@@ -437,6 +509,12 @@ class ModeStep:
     def physical_length(self) -> float:
         return abs(self.position_out - self.position_in)
 
+    @property
+    def optical_path_length(self) -> float:
+        if self.kind != "propagation":
+            return 0.0
+        return self.index_in * self.physical_length
+
 
 @dataclass(frozen=True)
 class PropagationPath:
@@ -480,6 +558,16 @@ class PropagationPath:
         if not self.steps:
             return 1.0
         return self.steps[-1].cumulative_coefficient
+
+    @property
+    def geometric_length(self) -> float:
+        return float(
+            sum(step.physical_length for step in self.steps if step.kind == "propagation")
+        )
+
+    @property
+    def optical_path_length(self) -> float:
+        return float(sum(step.optical_path_length for step in self.steps))
 
     @property
     def is_blocked(self) -> bool:
@@ -607,6 +695,81 @@ class CavityModeSolution:
     @property
     def rayleigh_range(self) -> float:
         return self.reference_beam.rayleigh_range
+
+    @property
+    def round_trip_power_retention(self) -> float:
+        """Return the effective round-trip power-retention coefficient."""
+        return float(np.clip(self.round_trip_coefficient, 0.0, 1.0))
+
+    @property
+    def round_trip_amplitude_retention(self) -> float:
+        """Return the effective round-trip field-amplitude coefficient."""
+        return float(np.sqrt(self.round_trip_power_retention))
+
+    @property
+    def one_way_geometric_length(self) -> float:
+        """Return the one-way geometric length between the selected endpoints."""
+        return self.inside_path.geometric_length
+
+    @property
+    def one_way_optical_path_length(self) -> float:
+        """Return the one-way optical path length ``sum(n_i * L_i)`` inside the cavity."""
+        return self.inside_path.optical_path_length
+
+    @property
+    def round_trip_optical_path_length(self) -> float:
+        """Return the round-trip optical path length."""
+        return 2.0 * self.one_way_optical_path_length
+
+    @property
+    def stability_parameter(self) -> float:
+        """Return the normalized stability parameter of the round-trip matrix."""
+        return self.round_trip_matrix.stability_parameter
+
+    @property
+    def is_stable(self) -> bool:
+        """Return whether the solved round-trip matrix is strictly stable."""
+        return self.round_trip_matrix.is_stable()
+
+    @property
+    def is_marginally_stable(self) -> bool:
+        """Return whether the solved round-trip matrix is on the stability edge."""
+        return self.round_trip_matrix.is_marginally_stable()
+
+    @property
+    def finesse(self) -> float:
+        """Return the cavity finesse from the effective round-trip retention.
+
+        The stored ``round_trip_coefficient`` is an effective round-trip power
+        retention. Converting it to the corresponding field-amplitude
+        coefficient ``r_rt`` gives the usual Fabry-Perot estimate
+
+        ``F = pi * sqrt(r_rt) / (1 - r_rt)``.
+        """
+        r_rt = self.round_trip_amplitude_retention
+        if r_rt <= 0:
+            return 0.0
+        if r_rt >= 1.0 - 1e-12:
+            return float("inf")
+        return float(np.pi * np.sqrt(r_rt) / (1.0 - r_rt))
+
+    @property
+    def free_spectral_range(self) -> float:
+        """Return the cavity free spectral range in Hz.
+
+        For a linear cavity this is ``c / (2 * sum(n_i * L_i))`` using the
+        one-way optical path between the chosen endpoints.
+        """
+        optical_length = self.one_way_optical_path_length
+        if optical_length <= 0:
+            return float("inf")
+        return float(SPEED_OF_LIGHT / (2.0 * optical_length))
+
+    def stability_diagram(
+        self, span: float | None = None, num_points: int = 512
+    ) -> dict[str, float | bool | np.ndarray]:
+        """Return stability-diagram data for the cavity round-trip matrix."""
+        return self.round_trip_matrix.stability_diagram(span=span, num_points=num_points)
 
     def beam_at(self, position: float, branch: str = "inside") -> BeamPoint:
         """Evaluate the solved mode at an exact position on one branch."""

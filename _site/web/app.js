@@ -12,6 +12,12 @@ const PYTHON_FILES = [
   "app/calculators/gaussian_beam.py",
 ];
 
+const COMPONENT_ICON_PATHS = {
+  curved_surface: "assets/curved_surface.svg",
+  plane_surface: "assets/plane_surface.svg",
+  lens: "assets/lens.svg",
+};
+
 const appState = {
   pyodide: null,
   calculators: [],
@@ -31,15 +37,20 @@ const appState = {
 const dom = {
   runtimeStatus: document.getElementById("runtime-status"),
   tabs: document.getElementById("tabs"),
+  heroPanel: document.getElementById("hero-panel"),
+  calculatorHeroCopy: document.getElementById("calculator-hero-copy"),
   calculatorTitle: document.getElementById("calculator-title"),
   calculatorDescription: document.getElementById("calculator-description"),
   globalControls: document.getElementById("global-controls"),
   summary: document.getElementById("summary"),
   builderPanel: document.getElementById("builder-panel"),
+  builderToolbar: document.getElementById("builder-toolbar"),
   builder: document.getElementById("builder"),
   builderHint: document.getElementById("builder-hint"),
   plot: document.getElementById("plot"),
+  plotSectionTitle: document.getElementById("plot-section-title"),
   plotReadout: document.getElementById("plot-readout"),
+  plotMetrics: document.getElementById("plot-metrics"),
   messages: document.getElementById("messages"),
 };
 
@@ -226,6 +237,15 @@ function defaultGap(labelIndex, refractiveIndex = 1.0, distanceMm = 20.0) {
 }
 
 
+function defaultBoundary(side, refractiveIndex = 1.0, outputLengthMm = 40.0) {
+  return {
+    label: side === "left" ? "Left boundary" : "Right boundary",
+    refractive_index: refractiveIndex,
+    output_length_mm: outputLengthMm,
+  };
+}
+
+
 function renumberGapLabels(state) {
   state.gaps.forEach((gap, index) => {
     gap.label = `Gap ${index + 1}`;
@@ -269,7 +289,7 @@ function ensureValidSelection() {
         appState.inlinePropertyEditor.index >= calculatorState.gaps.length
       ) ||
       (
-        appState.inlinePropertyEditor.entityType === "environment" &&
+        appState.inlinePropertyEditor.entityType === "boundary" &&
         !["left", "right"].includes(appState.inlinePropertyEditor.side)
       )
     )
@@ -313,12 +333,15 @@ function updateGapField(index, key, value) {
 }
 
 
-function updateEnvironmentField(side, key, value) {
+function updateBoundaryField(side, key, value) {
   const nextState = deepCopy(getActiveState());
-  const globalKey = side === "left" ? "left_environment_n" : "right_environment_n";
-  if (key === "refractive_index") {
-    nextState.globals[globalKey] = value;
+  if (!nextState.boundaries) {
+    nextState.boundaries = {
+      left: defaultBoundary("left"),
+      right: defaultBoundary("right"),
+    };
   }
+  nextState.boundaries[side][key] = value;
   commitState(nextState);
 }
 
@@ -357,10 +380,16 @@ function insertElementAt(zoneIndex, kind) {
     nextState.elements.push(item);
   } else if (zoneIndex === 0) {
     nextState.elements.splice(0, 0, item);
-    nextState.gaps.splice(0, 0, defaultGap(1, nextState.globals.left_environment_n));
+    nextState.gaps.splice(
+      0,
+      0,
+      defaultGap(1, nextState.boundaries?.left?.refractive_index ?? 1.0),
+    );
   } else if (zoneIndex === elementCount) {
     nextState.elements.push(item);
-    nextState.gaps.push(defaultGap(nextState.gaps.length + 1, nextState.globals.right_environment_n));
+    nextState.gaps.push(
+      defaultGap(nextState.gaps.length + 1, nextState.boundaries?.right?.refractive_index ?? 1.0),
+    );
   } else {
     const oldGap = nextState.gaps[zoneIndex - 1] || defaultGap(zoneIndex);
     const firstDistance = Math.max(0.1, Number(oldGap.distance_mm) / 2);
@@ -472,8 +501,8 @@ function showMessages(messages) {
 async function loadPyodideRuntime() {
   setStatus("Loading Pyodide...", "busy");
   const pyodide = await loadPyodide({ indexURL: PYODIDE_INDEX_URL });
-  setStatus("Loading numpy...", "busy");
-  await pyodide.loadPackage(["numpy"]);
+  setStatus("Loading numpy and scipy...", "busy");
+  await pyodide.loadPackage(["numpy", "scipy"]);
 
   for (const relativePath of PYTHON_FILES) {
     setStatus(`Loading ${relativePath}...`, "busy");
@@ -592,6 +621,7 @@ async function recomputeActiveCalculator() {
       error: error.message,
       warnings: [],
       summary_cards: [],
+      plot_metrics: [],
       plot: { traces: [], segments: [], elements: [], waist_marker: null, y_max_um: 200 },
       scene: { elements: [], gaps: [], environments: [], total_length_mm: 0 },
     });
@@ -752,6 +782,29 @@ function renderGlobalControls() {
 }
 
 
+function renderBuilderToolbar() {
+  const schema = getActiveSchema();
+  const calculatorState = getActiveState();
+  const isOpticalAxis = Boolean(schema && schema.layout === "optical_axis");
+  if (!isOpticalAxis) {
+    dom.builderToolbar.replaceChildren();
+    dom.builderToolbar.style.display = "none";
+    return;
+  }
+
+  const nodes = (schema.global_fields || []).map((field) =>
+    renderField(
+      field,
+      getValueByPath(calculatorState, field.path),
+      (nextValue) => updateGlobalField(field.path, nextValue),
+      calculatorState,
+    )
+  );
+  dom.builderToolbar.replaceChildren(...nodes);
+  dom.builderToolbar.style.display = nodes.length ? "" : "none";
+}
+
+
 function renderSummary() {
   const result = getActiveResult();
   if (!result || !(result.summary_cards || []).length) {
@@ -774,6 +827,29 @@ function renderSummary() {
     })
   );
   dom.summary.replaceChildren(...cards);
+}
+
+
+function renderPlotMetrics() {
+  const result = getActiveResult();
+  const metrics = (result && result.plot_metrics) || [];
+  if (!metrics.length) {
+    dom.plotMetrics.replaceChildren();
+    dom.plotMetrics.style.display = "none";
+    return;
+  }
+
+  const cards = metrics.map((card) =>
+    element("div", {
+      className: "summary-card plot-metric-card",
+      children: [
+        element("p", { className: "summary-label", text: card.label }),
+        element("p", { className: "summary-value", text: card.value }),
+      ],
+    })
+  );
+  dom.plotMetrics.replaceChildren(...cards);
+  dom.plotMetrics.style.display = "";
 }
 
 
@@ -849,7 +925,7 @@ function gapPropertyDescriptors() {
 }
 
 
-function environmentPropertyDescriptors() {
+function boundaryPropertyDescriptors() {
   return [
     {
       key: "refractive_index",
@@ -860,7 +936,32 @@ function environmentPropertyDescriptors() {
       minimum: 1e-6,
       suffix: "",
     },
+    {
+      key: "output_length_mm",
+      label: "out",
+      kind: "length_mm",
+      digits: 3,
+      step: 0.1,
+      minimum: 0.0,
+      suffix: "mm",
+    },
   ];
+}
+
+
+function createComponentIcon(kind, label, className = "component-icon", { flipX = false } = {}) {
+  const src = COMPONENT_ICON_PATHS[kind];
+  if (!src) {
+    return element("span", { className: `${className} placeholder`, text: "" });
+  }
+  return element("img", {
+    className: `${className}${flipX ? " is-flipped" : ""}`,
+    attrs: {
+      src,
+      alt: `${label} icon`,
+      draggable: "false",
+    },
+  });
 }
 
 
@@ -957,30 +1058,40 @@ function attachElementSwapHandlers(node, index) {
 }
 
 
-function createEnvironmentCard(side, calculatorState) {
-  const refractiveIndex = side === "left"
-    ? calculatorState.globals.left_environment_n
-    : calculatorState.globals.right_environment_n;
+function createBoundaryCard(side, calculatorState) {
+  const boundary = calculatorState.boundaries?.[side] || defaultBoundary(side);
+  const [indexDescriptor, outputDescriptor] = boundaryPropertyDescriptors();
   const node = element("div", {
-    className: "environment-card gap-card",
+    className: "boundary-card gap-card",
     children: [
       createInlinePropertyNode({
         editorState: {
-          entityType: "environment",
+          entityType: "boundary",
           side,
           key: "refractive_index",
         },
-        descriptor: environmentPropertyDescriptors()[0],
-        value: refractiveIndex,
-        onCommit: (nextValue) => updateEnvironmentField(side, "refractive_index", nextValue),
+        descriptor: indexDescriptor,
+        value: boundary.refractive_index,
+        onCommit: (nextValue) => updateBoundaryField(side, "refractive_index", nextValue),
         buttonClassName: "gap-pill gap-prop-button",
         editorClassName: "gap-pill gap-prop-editor",
       }),
       element("div", {
         className: "gap-core",
-        children: [element("div", { className: "edge-label", text: side === "left" ? "Left boundary" : "Right boundary" })],
+        children: [element("div", { className: "edge-label", text: boundary.label })],
       }),
-      element("div", { className: "gap-pill", text: side === "left" ? "Insert at start" : "Insert at end" }),
+      createInlinePropertyNode({
+        editorState: {
+          entityType: "boundary",
+          side,
+          key: "output_length_mm",
+        },
+        descriptor: outputDescriptor,
+        value: boundary.output_length_mm,
+        onCommit: (nextValue) => updateBoundaryField(side, "output_length_mm", nextValue),
+        buttonClassName: "gap-pill gap-prop-button",
+        editorClassName: "gap-pill gap-prop-editor",
+      }),
     ],
   });
   attachZoneDropHandlers(node, side === "left" ? 0 : calculatorState.elements.length);
@@ -1195,7 +1306,15 @@ function createElementCard(item, index, calculatorState) {
         className: "element-header",
         children: [titleInput, deleteButton],
       }),
-      element("div", { className: "element-kind", text: item.kind.replaceAll("_", " ") }),
+      element("div", {
+        className: "element-kind-row",
+        children: [
+          createComponentIcon(item.kind, item.label, "element-kind-icon", {
+            flipX: item.kind === "curved_surface" && Number(item.radius_mm || 0) < 0,
+          }),
+          element("div", { className: "element-kind", text: item.kind.replaceAll("_", " ") }),
+        ],
+      }),
       element("div", {
         className: "element-props",
         children: elementPropertyDescriptors(item).map((descriptor) =>
@@ -1254,7 +1373,10 @@ function renderAxisBuilder() {
   const paletteNodes = (schema.palette || []).map((item) => {
     const chip = element("div", {
       className: "palette-item",
-      text: item.label,
+      children: [
+        createComponentIcon(item.kind, item.label, "palette-icon"),
+        element("span", { text: item.label }),
+      ],
       attrs: { draggable: "true" },
     });
     chip.addEventListener("dragstart", (event) => {
@@ -1286,14 +1408,14 @@ function renderAxisBuilder() {
     attachZoneDropHandlers(emptyDrop, 0);
     track.append(emptyDrop);
   } else {
-    track.append(createEnvironmentCard("left", calculatorState));
+    track.append(createBoundaryCard("left", calculatorState));
     calculatorState.elements.forEach((item, index) => {
       track.append(createElementCard(item, index, calculatorState));
       if (index < calculatorState.gaps.length) {
         track.append(createGapCard(calculatorState.gaps[index], index));
       }
     });
-    track.append(createEnvironmentCard("right", calculatorState));
+    track.append(createBoundaryCard("right", calculatorState));
   }
 
   axisShell.append(track);
@@ -1389,9 +1511,12 @@ function buildElementPlotTraces(plot, yMax) {
         showlegend: false,
       });
     } else if (item.kind === "lens") {
+      const theta = linspace(0, 2 * Math.PI, 180);
+      const xRadius = 0.42;
+      const yRadius = topY * 0.9;
       traces.push({
-        x: [item.position_mm - 0.9, item.position_mm, item.position_mm + 0.9, item.position_mm],
-        y: [0.0, topY * 0.88, 0.0, -topY * 0.88],
+        x: theta.map((value) => item.position_mm + xRadius * Math.cos(value)),
+        y: theta.map((value) => yRadius * Math.sin(value)),
         type: "scatter",
         mode: "lines",
         hoverinfo: "skip",
@@ -1994,13 +2119,9 @@ function renderPlot() {
   }
 
   const layout = {
-    title: {
-      text: (schema && schema.title) || "Calculator",
-      font: { family: "Space Grotesk, sans-serif", size: 24, color: "#241f17" },
-    },
     paper_bgcolor: "rgba(0,0,0,0)",
     plot_bgcolor: "rgba(255,255,255,0.82)",
-    margin: { t: 64, r: 24, b: 64, l: 72 },
+    margin: { t: 24, r: 24, b: 64, l: 72 },
     xaxis: {
       title: "Axis Position [mm]",
       range: [xBounds.xMin, xBounds.xMax],
@@ -2078,15 +2199,20 @@ function renderApp() {
 
   dom.calculatorTitle.textContent = calculator.title;
   dom.calculatorDescription.textContent = calculator.description;
+  dom.heroPanel.style.display = schema.layout === "optical_axis" ? "none" : "";
+  dom.calculatorHeroCopy.style.display = schema.layout === "optical_axis" ? "none" : "";
+  dom.plotSectionTitle.textContent = schema.layout === "optical_axis" ? "Cavity mode" : calculator.title;
   dom.builderHint.textContent =
     schema.layout === "optical_axis"
       ? "Drag components onto the axis, drop onto other elements to swap them, rename components at the title, edit all optics and gap parameters directly in place, and move across the plot to inspect the active interval."
       : "Adjust the control values to run the selected calculator in the browser-side Python runtime.";
 
   renderGlobalControls();
+  renderBuilderToolbar();
   renderSummary();
   renderAxisBuilder();
   renderPlot();
+  renderPlotMetrics();
   renderMessages();
 }
 

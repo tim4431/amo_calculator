@@ -16,10 +16,19 @@ from ..base import CalculatorDefinition
 _DEFAULT_STATE: dict[str, Any] = {
     "globals": {
         "wavelength_nm": 1064.0,
-        "output_length_mm": 40.0,
-        "left_environment_n": 1.0,
-        "right_environment_n": 1.0,
         "endpoint_ids": ["m1", "m2"],
+    },
+    "boundaries": {
+        "left": {
+            "label": "Left boundary",
+            "refractive_index": 1.0,
+            "output_length_mm": 40.0,
+        },
+        "right": {
+            "label": "Right boundary",
+            "refractive_index": 1.0,
+            "output_length_mm": 40.0,
+        },
     },
     "elements": [
         {
@@ -102,20 +111,9 @@ class CavityModeCalculator(CalculatorDefinition):
                 {
                     "path": "globals.wavelength_nm",
                     "label": "Wavelength",
-                    "type": "range_number",
-                    "min": 266.0,
-                    "max": 2000.0,
+                    "type": "number",
                     "step": 1.0,
                     "unit": "nm",
-                },
-                {
-                    "path": "globals.output_length_mm",
-                    "label": "Outgoing beam extent",
-                    "type": "range_number",
-                    "min": 0.0,
-                    "max": 200.0,
-                    "step": 1.0,
-                    "unit": "mm",
                 },
             ],
             "element_forms": {
@@ -188,7 +186,7 @@ class CavityModeCalculator(CalculatorDefinition):
                     "unit": "mm",
                 },
             ],
-            "environment_fields": [
+            "boundary_fields": [
                 {
                     "key": "refractive_index",
                     "label": "Refractive index",
@@ -197,6 +195,15 @@ class CavityModeCalculator(CalculatorDefinition):
                     "max": 3.0,
                     "step": 0.001,
                     "unit": "",
+                },
+                {
+                    "key": "output_length_mm",
+                    "label": "Outgoing beam extent",
+                    "type": "range_number",
+                    "min": 0.0,
+                    "max": 200.0,
+                    "step": 1.0,
+                    "unit": "mm",
                 }
             ],
         }
@@ -214,6 +221,7 @@ class CavityModeCalculator(CalculatorDefinition):
                 "normalized_state": normalized,
                 "scene": scene,
                 "plot": self._empty_plot(scene),
+                "plot_metrics": [],
                 "summary_cards": [],
             }
 
@@ -225,6 +233,7 @@ class CavityModeCalculator(CalculatorDefinition):
                 "normalized_state": normalized,
                 "scene": scene,
                 "plot": self._empty_plot(scene),
+                "plot_metrics": [],
                 "summary_cards": [],
             }
 
@@ -238,6 +247,7 @@ class CavityModeCalculator(CalculatorDefinition):
                 "normalized_state": normalized,
                 "scene": scene,
                 "plot": self._empty_plot(scene),
+                "plot_metrics": [],
                 "summary_cards": [],
             }
 
@@ -248,7 +258,8 @@ class CavityModeCalculator(CalculatorDefinition):
             "normalized_state": normalized,
             "scene": scene,
             "plot": self._build_plot(mode, scene, normalized),
-            "summary_cards": self._summary_cards(mode),
+            "plot_metrics": self._plot_metrics(mode),
+            "summary_cards": [],
         }
 
     def _normalize_state(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -271,15 +282,14 @@ class CavityModeCalculator(CalculatorDefinition):
         return {
             "globals": {
                 "wavelength_nm": _positive_float(raw_globals.get("wavelength_nm"), 1064.0),
-                "output_length_mm": max(0.0, _safe_float(raw_globals.get("output_length_mm"), 40.0)),
-                "left_environment_n": _positive_float(
-                    raw_globals.get("left_environment_n"), 1.0, minimum=1e-6
-                ),
-                "right_environment_n": _positive_float(
-                    raw_globals.get("right_environment_n"), 1.0, minimum=1e-6
-                ),
                 "endpoint_ids": endpoint_ids,
             },
+            "boundaries": self._normalize_boundaries(
+                state.get("boundaries", {}),
+                legacy_left_n=raw_globals.get("left_environment_n"),
+                legacy_right_n=raw_globals.get("right_environment_n"),
+                legacy_output_length=raw_globals.get("output_length_mm"),
+            ),
             "elements": elements,
             "gaps": gaps,
         }
@@ -340,6 +350,37 @@ class CavityModeCalculator(CalculatorDefinition):
                 }
             )
         return gaps
+
+    def _normalize_boundaries(
+        self,
+        raw_boundaries: dict[str, Any],
+        legacy_left_n: Any,
+        legacy_right_n: Any,
+        legacy_output_length: Any,
+    ) -> dict[str, dict[str, Any]]:
+        left_raw = raw_boundaries.get("left", {}) if isinstance(raw_boundaries, dict) else {}
+        right_raw = raw_boundaries.get("right", {}) if isinstance(raw_boundaries, dict) else {}
+        default_output_length = max(0.0, _safe_float(legacy_output_length, 40.0))
+        return {
+            "left": {
+                "label": str(left_raw.get("label") or "Left boundary"),
+                "refractive_index": _positive_float(
+                    left_raw.get("refractive_index", legacy_left_n), 1.0, minimum=1e-6
+                ),
+                "output_length_mm": max(
+                    0.0, _safe_float(left_raw.get("output_length_mm"), default_output_length)
+                ),
+            },
+            "right": {
+                "label": str(right_raw.get("label") or "Right boundary"),
+                "refractive_index": _positive_float(
+                    right_raw.get("refractive_index", legacy_right_n), 1.0, minimum=1e-6
+                ),
+                "output_length_mm": max(
+                    0.0, _safe_float(right_raw.get("output_length_mm"), default_output_length)
+                ),
+            },
+        }
 
     @staticmethod
     def _normalize_endpoint_ids(
@@ -403,14 +444,16 @@ class CavityModeCalculator(CalculatorDefinition):
         environments = [
             {
                 "side": "left",
-                "label": "Left environment",
-                "refractive_index": state["globals"]["left_environment_n"],
+                "label": state["boundaries"]["left"]["label"],
+                "refractive_index": state["boundaries"]["left"]["refractive_index"],
+                "output_length_mm": state["boundaries"]["left"]["output_length_mm"],
                 "insert_index": 0,
             },
             {
                 "side": "right",
-                "label": "Right environment",
-                "refractive_index": state["globals"]["right_environment_n"],
+                "label": state["boundaries"]["right"]["label"],
+                "refractive_index": state["boundaries"]["right"]["refractive_index"],
+                "output_length_mm": state["boundaries"]["right"]["output_length_mm"],
                 "insert_index": len(elements),
             },
         ]
@@ -470,14 +513,14 @@ class CavityModeCalculator(CalculatorDefinition):
             axis.set_sector(
                 None,
                 first_ref,
-                state["globals"]["left_environment_n"],
-                label="Left environment",
+                state["boundaries"]["left"]["refractive_index"],
+                label=state["boundaries"]["left"]["label"],
             )
             axis.set_sector(
                 last_ref,
                 None,
-                state["globals"]["right_environment_n"],
-                label="Right environment",
+                state["boundaries"]["right"]["refractive_index"],
+                label=state["boundaries"]["right"]["label"],
             )
 
         for gap, left_element, right_element in zip(
@@ -506,7 +549,8 @@ class CavityModeCalculator(CalculatorDefinition):
         )
 
     def _build_plot(self, mode, scene: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
-        output_length_m = 1e-3 * state["globals"]["output_length_mm"]
+        left_output_length_m = 1e-3 * state["boundaries"]["left"]["output_length_mm"]
+        right_output_length_m = 1e-3 * state["boundaries"]["right"]["output_length_mm"]
 
         segments = []
         segments.extend(
@@ -521,7 +565,7 @@ class CavityModeCalculator(CalculatorDefinition):
         segments.extend(
             self._segments_from_output_branch(
                 mode.left_path,
-                extension_length_m=output_length_m,
+                extension_length_m=left_output_length_m,
                 display_name="Left outgoing beam",
                 branch="left",
                 color="#bb3e03",
@@ -531,7 +575,7 @@ class CavityModeCalculator(CalculatorDefinition):
         segments.extend(
             self._segments_from_output_branch(
                 mode.right_path,
-                extension_length_m=output_length_m,
+                extension_length_m=right_output_length_m,
                 display_name="Right outgoing beam",
                 branch="right",
                 color="#bb3e03",
@@ -762,27 +806,22 @@ class CavityModeCalculator(CalculatorDefinition):
         return deduplicated
 
     @staticmethod
-    def _summary_cards(mode) -> list[dict[str, str]]:
+    def _plot_metrics(mode) -> list[dict[str, str]]:
+        fsr = float(mode.free_spectral_range)
+        if not np.isfinite(fsr):
+            fsr_text = "inf"
+        elif abs(fsr) >= 1e9:
+            fsr_text = f"{fsr / 1e9:.3f} GHz"
+        elif abs(fsr) >= 1e6:
+            fsr_text = f"{fsr / 1e6:.3f} MHz"
+        elif abs(fsr) >= 1e3:
+            fsr_text = f"{fsr / 1e3:.3f} kHz"
+        else:
+            fsr_text = f"{fsr:.3f} Hz"
+
         return [
-            {"label": "Reference waist radius", "value": f"{1e6 * mode.waist_radius:.3f} um"},
-            {"label": "Reference waist position", "value": f"{1e3 * mode.waist_position:.3f} mm"},
-            {"label": "Reference Rayleigh range", "value": f"{1e3 * mode.rayleigh_range:.3f} mm"},
-            {
-                "label": "Left q",
-                "value": f"{1e3 * np.real(mode.q_left):.3f} + {1e3 * np.imag(mode.q_left):.3f}i mm",
-            },
-            {
-                "label": "Right q",
-                "value": f"{1e3 * np.real(mode.q_right):.3f} + {1e3 * np.imag(mode.q_right):.3f}i mm",
-            },
-            {
-                "label": "Left transmission",
-                "value": f"{mode.left_path.cumulative_coefficient:.4f}",
-            },
-            {
-                "label": "Right transmission",
-                "value": f"{mode.right_path.cumulative_coefficient:.4f}",
-            },
+            {"label": "Finesse", "value": f"{mode.finesse:.3f}"},
+            {"label": "FSR", "value": fsr_text},
         ]
 
 
