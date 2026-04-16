@@ -18,7 +18,7 @@ ROOT_FILES = [
 TREE_DIRS = [
     "core",
     "web",
-    "webapp",
+    "app",
 ]
 
 

@@ -42,17 +42,17 @@ jobs:
           python -m py_compile \
             core/cavity_mode.py \
             core/gaussian_beam.py \
-            webapp/__init__.py \
-            webapp/base.py \
-            webapp/registry.py \
-            webapp/calculators/__init__.py \
-            webapp/calculators/cavity_mode.py \
-            webapp/calculators/gaussian_beam.py
+            app/__init__.py \
+            app/base.py \
+            app/registry.py \
+            app/calculators/__init__.py \
+            app/calculators/cavity_mode.py \
+            app/calculators/gaussian_beam.py
 
       - name: Run calculator smoke tests
         run: |
           python - <<'PY'
-          from webapp.registry import get_calculator_schema, list_calculators, run_calculator
+          from app.registry import get_calculator_schema, list_calculators, run_calculator
 
           calculators = [item["id"] for item in list_calculators()]
           print("calculators:", calculators)

@@ -2,16 +2,27 @@
 
 A small AMO calculator codebase with browser-deployable Python calculators.
 
-## What is in the repo
+Live site: [tim4431.github.io/amo_calculator](https://tim4431.github.io/amo_calculator/)
+
+## Repository layout
 
 - `core/`
-  Pure computation code. This is where the optics and other physics models live.
-- `webapp/`
-  Python wrappers that expose calculators to the browser runtime through a unified registry.
+  Pure scientific computation code.
+- `app/`
+  Browser-facing Python wrappers and the calculator registry.
 - `web/`
-  Static frontend assets. The page loads Pyodide in the browser, runs the Python code locally, and renders controls plus plots.
+  Static frontend assets that load Pyodide and render the UI.
 - `example/`
-  Standalone Python examples, including a confocal cavity mode example.
+  Standalone Python examples.
+- `doc/`
+  Detailed project documentation.
+
+## Documentation
+
+- [Documentation Index](doc/README.md)
+- [Architecture Overview](doc/architecture.md)
+- [Adding A Calculator](doc/adding_a_calculator.md)
+- [Cavity Mode Calculator](doc/cavity_mode_calculator.md)
 
 ## Current browser calculators
 
@@ -20,28 +31,12 @@ A small AMO calculator codebase with browser-deployable Python calculators.
 - `Gaussian Beam`
   A smaller calculator that demonstrates the multi-tab registry with a different Python backend.
 
-## Architecture
-
-The repository is split into three layers:
-
-1. `core/` contains only the computation primitives.
-2. `webapp/calculators/*.py` contains browser-facing calculator wrappers:
-   - default state
-   - UI schema
-   - translation from UI state into `core` calls
-   - JSON-serializable plot and summary output
-3. `index.html` + `web/app.js` + `web/styles.css` implement a static frontend.
-
-The frontend loads Pyodide, copies the local Python files into the in-browser virtual filesystem, imports `webapp.registry`, and runs the selected calculator directly in the browser.
-
-This means the site can be hosted on GitHub Pages without a Python server.
-
 ## Run locally
 
 Use any static file server from the repository root. For example:
 
 ```bash
-python -m http.server 8000
+python3 -m http.server 8000
 ```
 
 Then open:
@@ -49,19 +44,6 @@ Then open:
 ```text
 http://localhost:8000
 ```
-
-## GitHub Pages deployment
-
-This repository includes a root `index.html` and `.nojekyll`, so it is compatible with GitHub Pages static hosting.
-
-One simple deployment path is:
-
-1. Push the repository to GitHub.
-2. In the repository settings, enable GitHub Pages.
-3. Serve from the default branch root.
-4. Open the published Pages URL.
-
-Because Pyodide runs in the browser, no backend deployment is needed.
 
 ## Python testing
 
@@ -71,19 +53,19 @@ The current calculator wrappers were validated in the `calc` conda environment w
 conda run --no-capture-output -n calc python -m py_compile \
   core/cavity_mode.py \
   core/gaussian_beam.py \
-  webapp/__init__.py \
-  webapp/base.py \
-  webapp/registry.py \
-  webapp/calculators/__init__.py \
-  webapp/calculators/cavity_mode.py \
-  webapp/calculators/gaussian_beam.py
+  app/__init__.py \
+  app/base.py \
+  app/registry.py \
+  app/calculators/__init__.py \
+  app/calculators/cavity_mode.py \
+  app/calculators/gaussian_beam.py
 ```
 
 And with direct execution of the registry:
 
 ```bash
 conda run --no-capture-output -n calc python - <<'PY'
-from webapp.registry import list_calculators, get_calculator_schema, run_calculator
+from app.registry import list_calculators, get_calculator_schema, run_calculator
 
 print([c["id"] for c in list_calculators()])
 print(run_calculator("cavity-mode", get_calculator_schema("cavity-mode")["default_state"])["ok"])
