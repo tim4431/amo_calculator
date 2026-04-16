@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from core.gaussian_clipping import power_inside
+from core.gaussian_clipping import power_inside, power_loss_curve
 
 from ..base import CalculatorDefinition, positive_float, safe_float
 
@@ -17,6 +17,7 @@ _DEFAULT_STATE: dict[str, Any] = {
         "displacement_um": 0.0,
     }
 }
+_LOSS_CURVE_SAMPLES = 61
 
 
 class GaussianClippingCalculator(CalculatorDefinition):
@@ -75,6 +76,7 @@ class GaussianClippingCalculator(CalculatorDefinition):
 
         fraction_inside = power_inside(diameter, waist, displacement)
         fraction_outside = 1.0 - fraction_inside
+        curve_x, curve_loss = power_loss_curve(diameter, waist, _LOSS_CURVE_SAMPLES)
 
         plot_metrics = [
             {"label": "Power inside D", "value": f"{100.0 * fraction_inside:.4f} %"},
@@ -82,6 +84,20 @@ class GaussianClippingCalculator(CalculatorDefinition):
             {"label": "D / w", "value": f"{diameter / waist:.3f}"},
             {"label": "x / w", "value": f"{displacement / waist:.3f}"},
         ]
+        plot = {
+            "loss_curve": {
+                "x_um": list(curve_x),
+                "loss_percent": [100.0 * value for value in curve_loss],
+                "x_axis_title": "Displacement x [um]",
+                "y_axis_title": "Power loss [%]",
+                "max_displacement_um": waist,
+                "current_point": {
+                    "visible": displacement <= waist,
+                    "x_um": displacement,
+                    "loss_percent": 100.0 * fraction_outside,
+                },
+            }
+        }
 
         normalized = {
             "globals": {
@@ -96,6 +112,7 @@ class GaussianClippingCalculator(CalculatorDefinition):
             "error": None,
             "warnings": [],
             "normalized_state": normalized,
+            "plot": plot,
             "plot_metrics": plot_metrics,
             "summary_cards": [],
         }

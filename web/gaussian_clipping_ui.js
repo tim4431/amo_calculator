@@ -1,7 +1,6 @@
 // Two-column tab for the Gaussian clipping calculator.
 // Left column: title, description, controls, metric cards.
-// Right column: 2D intensity heatmap drawn on a plain <canvas>
-// (white -> red colormap) with a dashed black circle marking the aperture.
+// Right column: a heatmap view of the displaced Gaussian plus a loss-vs-x curve.
 
 import { element, getValueByPath, renderField } from "./ui_common.js";
 import { collectStandardMessages, createMessagesPanel } from "./panels.js";
@@ -171,6 +170,109 @@ function renderPlot(canvas, waist, displacement, apertureRadius) {
 }
 
 
+function formatMicronValue(value) {
+  return Number(value).toFixed(1);
+}
+
+
+function renderLossCurve(plotHost, lossCurve) {
+  if (!(lossCurve?.x_um?.length && lossCurve?.loss_percent?.length)) {
+    if (typeof Plotly?.purge === "function") Plotly.purge(plotHost);
+    plotHost.replaceChildren();
+    return;
+  }
+
+  if (typeof Plotly?.react !== "function") {
+    plotHost.replaceChildren(
+      element("p", {
+        className: "empty-state",
+        text: "Plotly is required to render the loss curve.",
+      }),
+    );
+    return;
+  }
+
+  const xValues = lossCurve.x_um.map((value) => Number(value));
+  const yValues = lossCurve.loss_percent.map((value) => Number(value));
+  const currentPoint = lossCurve.current_point || null;
+  const currentVisible = Boolean(currentPoint?.visible);
+  const currentX = Number(currentPoint?.x_um) || 0;
+  const currentY = Number(currentPoint?.loss_percent) || 0;
+  const xMax = Math.max(...xValues, 1);
+  const yTop = 1.08 * Math.max(...yValues, currentVisible ? currentY : 0, 0.01);
+
+  const traces = [
+    {
+      x: xValues,
+      y: yValues,
+      type: "scatter",
+      mode: "lines",
+      name: "Power loss",
+      line: { color: "#b34700", width: 4 },
+      hovertemplate: "x = %{x:.2f} um<br>Power loss = %{y:.4f} %<extra></extra>",
+    },
+  ];
+
+  if (currentVisible) {
+    traces.push({
+      x: [currentX],
+      y: [currentY],
+      type: "scatter",
+      mode: "markers",
+      name: "Current x",
+      marker: {
+        color: "#0b7285",
+        size: 11,
+        line: { color: "rgba(255,255,255,0.96)", width: 1.5 },
+      },
+      hovertemplate: "Current x = %{x:.2f} um<br>Power loss = %{y:.4f} %<extra></extra>",
+    });
+  }
+
+  Plotly.react(
+    plotHost,
+    traces,
+    {
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(255,255,255,0.82)",
+      margin: { t: 18, r: 24, b: 60, l: 72 },
+      xaxis: {
+        title: lossCurve.x_axis_title || "Displacement x [um]",
+        range: [0, xMax],
+        zeroline: false,
+        gridcolor: "rgba(36, 31, 23, 0.1)",
+      },
+      yaxis: {
+        title: lossCurve.y_axis_title || "Power loss [%]",
+        range: [0, yTop],
+        zeroline: false,
+        gridcolor: "rgba(36, 31, 23, 0.1)",
+      },
+      hovermode: "closest",
+      legend: { orientation: "h", x: 1, xanchor: "right", y: 1.12 },
+      shapes: currentVisible
+        ? [
+            {
+              type: "line",
+              x0: currentX,
+              x1: currentX,
+              y0: 0,
+              y1: currentY,
+              line: { color: "rgba(11, 114, 133, 0.4)", width: 1.5, dash: "dot" },
+            },
+          ]
+        : [],
+      uirevision: "clipping-loss-curve",
+    },
+    {
+      responsive: true,
+      displaylogo: false,
+      modeBarButtonsToRemove: ["lasso2d", "select2d"],
+    },
+  );
+}
+
+
 function renderControls(host, schema, state, onUpdate) {
   const fields = schema?.global_fields || [];
   const nodes = fields.map((field) =>
@@ -223,13 +325,50 @@ export function createGaussianClippingTab({ title } = {}) {
     });
 
     const canvas = element("canvas", { className: "clipping-canvas" });
-    const plotHost = element("div", {
+    const heatmapHost = element("div", {
       className: "clipping-plot",
       children: [canvas],
     });
+    const heatmapCard = element("section", {
+      className: "clipping-visual-card",
+      children: [
+        element("div", {
+          className: "clipping-visual-header",
+          children: [
+            element("h4", { className: "clipping-visual-title", text: "Beam Profile" }),
+            element("p", {
+              className: "clipping-visual-copy",
+              text: "Current Gaussian intensity with the aperture boundary shown as a dashed circle.",
+            }),
+          ],
+        }),
+        heatmapHost,
+      ],
+    });
+
+    const curveCopyNode = element("p", { className: "clipping-visual-copy", text: "" });
+    const curveHost = element("div", { className: "clipping-curve-host" });
+    const curveCard = element("section", {
+      className: "clipping-visual-card",
+      children: [
+        element("div", {
+          className: "clipping-visual-header",
+          children: [
+            element("h4", { className: "clipping-visual-title", text: "Loss vs Displacement" }),
+            curveCopyNode,
+          ],
+        }),
+        curveHost,
+      ],
+    });
+
+    const visuals = element("div", {
+      className: "clipping-visuals",
+      children: [heatmapCard, curveCard],
+    });
     const rightColumn = element("div", {
       className: "clipping-right",
-      children: [plotHost],
+      children: [visuals],
     });
 
     const grid = element("div", {
@@ -249,8 +388,17 @@ export function createGaussianClippingTab({ title } = {}) {
       if (!lastParams) return;
       renderPlot(canvas, lastParams.waist, lastParams.displacement, lastParams.apertureRadius);
     };
-    const resizeObserver = new ResizeObserver(draw);
+    const resizeObserver = new ResizeObserver(() => {
+      draw();
+      if (
+        typeof Plotly?.Plots?.resize === "function"
+        && curveHost.classList.contains("js-plotly-plot")
+      ) {
+        Plotly.Plots.resize(curveHost);
+      }
+    });
     resizeObserver.observe(canvas);
+    resizeObserver.observe(curveHost);
 
     function update(ctx) {
       titleNode.textContent = ctx.calculator?.title || title || "Gaussian Clipping";
@@ -267,12 +415,34 @@ export function createGaussianClippingTab({ title } = {}) {
         draw();
       }
 
+      const lossCurve = ctx.result?.plot?.loss_curve || null;
+      renderLossCurve(curveHost, lossCurve);
+      if (lossCurve) {
+        const rangeText = `For fixed D and w, the curve sweeps x from 0 to ${formatMicronValue(
+          lossCurve.max_displacement_um,
+        )} um.`;
+        if (lossCurve.current_point?.visible) {
+          curveCopyNode.textContent =
+            `${rangeText} The teal marker shows the current x = ${formatMicronValue(
+              lossCurve.current_point.x_um,
+            )} um.`;
+        } else {
+          curveCopyNode.textContent =
+            `${rangeText} The current x = ${formatMicronValue(
+              lossCurve.current_point?.x_um || 0,
+            )} um lies outside the plotted range.`;
+        }
+      } else {
+        curveCopyNode.textContent = "The loss curve will appear after the calculator runs.";
+      }
+
       renderMetrics(metricsHost, ctx.result?.plot_metrics || []);
       messages.setMessages(collectStandardMessages(ctx.result));
     }
 
     function unmount() {
       resizeObserver.disconnect();
+      if (typeof Plotly?.purge === "function") Plotly.purge(curveHost);
       workspace.replaceChildren();
     }
 
