@@ -57,8 +57,7 @@ def _validate_probability(name: str, value: float, label: str) -> None:
         raise ValueError(f"{label}: {name} must lie in [0, 1], got {value}.")
 
 
-def _validate_coefficients(transmission: float, reflection: float, label: str) -> None:
-    _validate_probability("transmission", transmission, label)
+def _validate_reflection(reflection: float, label: str) -> None:
     _validate_probability("reflection", reflection, label)
 
 
@@ -172,8 +171,11 @@ class OpticalElement:
     """Base class for axis elements."""
 
     label: str
-    transmission: float
     reflection: float
+
+    @property
+    def transmission(self) -> float:
+        return 1.0 - self.reflection
 
     @property
     def kind(self) -> str:
@@ -204,13 +206,12 @@ class Lens(OpticalElement):
 
     focal_length: float
     label: str = "lens"
-    transmission: float = 1.0
     reflection: float = 0.0
 
     def __post_init__(self):
         if _is_close(self.focal_length, 0.0):
             raise ValueError("Lens focal length must be non-zero.")
-        _validate_coefficients(self.transmission, self.reflection, self.label)
+        _validate_reflection(self.reflection, self.label)
 
     def transmission_matrix(
         self, n_left: float, n_right: float, direction: int = 1
@@ -229,11 +230,10 @@ class PlaneSurface(OpticalElement):
     """Planar interface that reads its left/right refractive indices from sectors."""
 
     label: str = "plane surface"
-    transmission: float = 1.0
     reflection: float = 0.0
 
     def __post_init__(self):
-        _validate_coefficients(self.transmission, self.reflection, self.label)
+        _validate_reflection(self.reflection, self.label)
 
     def transmission_matrix(
         self, n_left: float, n_right: float, direction: int = 1
@@ -261,13 +261,12 @@ class CurvedSurface(OpticalElement):
 
     radius: float
     label: str = "curved surface"
-    transmission: float = 1.0
     reflection: float = 0.0
 
     def __post_init__(self):
         if _is_close(self.radius, 0.0):
             raise ValueError("CurvedSurface radius must be non-zero.")
-        _validate_coefficients(self.transmission, self.reflection, self.label)
+        _validate_reflection(self.reflection, self.label)
 
     def transmission_matrix(
         self, n_left: float, n_right: float, direction: int = 1
@@ -649,14 +648,12 @@ class OpticalAxis:
         position: float,
         focal_length: float,
         label: str = "lens",
-        transmission: float = 1.0,
         reflection: float = 0.0,
     ) -> ElementReference:
         return self._add_element(
             Lens(
                 focal_length=focal_length,
                 label=label,
-                transmission=transmission,
                 reflection=reflection,
             ),
             position=position,
@@ -666,13 +663,11 @@ class OpticalAxis:
         self,
         position: float,
         label: str = "plane surface",
-        transmission: float = 1.0,
         reflection: float = 0.0,
     ) -> ElementReference:
         return self._add_element(
             PlaneSurface(
                 label=label,
-                transmission=transmission,
                 reflection=reflection,
             ),
             position=position,
@@ -683,14 +678,12 @@ class OpticalAxis:
         position: float,
         radius: float,
         label: str = "curved surface",
-        transmission: float = 1.0,
         reflection: float = 0.0,
     ) -> ElementReference:
         return self._add_element(
             CurvedSurface(
                 radius=radius,
                 label=label,
-                transmission=transmission,
                 reflection=reflection,
             ),
             position=position,

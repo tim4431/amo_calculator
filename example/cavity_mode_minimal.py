@@ -26,14 +26,12 @@ def main() -> None:
         position=0.0,
         radius=mirror_radius,
         label="M1",
-        transmission=0.05,
         reflection=0.95,
     )
     m2 = axis.add_curved_surface(
         position=cavity_length,
         radius=-mirror_radius,
         label="M2",
-        transmission=0.05,
         reflection=0.95,
     )
 

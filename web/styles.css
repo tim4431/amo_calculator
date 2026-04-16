@@ -290,16 +290,17 @@ input[type="range"] {
 
 .gap-card,
 .environment-card {
-  width: 118px;
+  width: 138px;
   display: grid;
   grid-template-rows: auto 1fr auto;
   gap: 10px;
   align-items: center;
   justify-items: center;
-  cursor: pointer;
+  cursor: default;
 }
 
 .gap-pill {
+  width: 100%;
   min-width: 104px;
   border-radius: 999px;
   padding: 6px 10px;
@@ -307,6 +308,29 @@ input[type="range"] {
   background: rgba(255, 255, 255, 0.78);
   border: 1px solid rgba(52, 43, 26, 0.1);
   font-size: 0.82rem;
+}
+
+.gap-prop-button,
+.gap-prop-editor {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.gap-prop-button {
+  appearance: none;
+  cursor: pointer;
+  color: var(--text);
+  font: inherit;
+}
+
+.gap-prop-button:hover,
+.gap-prop-editor:focus-within {
+  border-color: rgba(11, 114, 133, 0.34);
+  box-shadow: 0 0 0 3px rgba(11, 114, 133, 0.08);
 }
 
 .gap-core {
@@ -338,14 +362,6 @@ input[type="range"] {
   background: linear-gradient(90deg, rgba(187, 62, 3, 0.16), rgba(187, 62, 3, 0.7), rgba(187, 62, 3, 0.16));
 }
 
-.gap-card.selected .gap-pill,
-.gap-card.selected .gap-core,
-.environment-card.selected .gap-pill,
-.environment-card.selected .gap-core {
-  border-color: rgba(11, 114, 133, 0.48);
-  box-shadow: 0 0 0 3px rgba(11, 114, 133, 0.12);
-}
-
 .gap-card.active .gap-core,
 .environment-card.active .gap-core {
   border-color: rgba(11, 114, 133, 0.55);
@@ -370,12 +386,8 @@ input[type="range"] {
   cursor: pointer;
   display: grid;
   gap: 10px;
+  grid-template-rows: auto auto 1fr auto;
   align-content: start;
-}
-
-.element-card.selected {
-  border-color: rgba(11, 114, 133, 0.48);
-  box-shadow: 0 0 0 3px rgba(11, 114, 133, 0.12);
 }
 
 .element-card.active {
@@ -413,20 +425,23 @@ input[type="range"] {
 .element-title-input:focus {
   background: rgba(11, 114, 133, 0.08);
   border-radius: 8px;
-  padding: 4px 6px;
-  margin: -4px -6px;
+  padding: 0;
+  box-shadow: 0 0 0 3px rgba(11, 114, 133, 0.08);
 }
 
 .icon-button {
   appearance: none;
   width: 28px;
   height: 28px;
+  padding: 0;
   border: none;
   border-radius: 999px;
   background: rgba(180, 35, 24, 0.1);
   color: var(--danger);
-  font: inherit;
+  font-family: "Times New Roman", serif;
+  font-size: 1.15rem;
   font-weight: 700;
+  line-height: 1;
   cursor: pointer;
   display: grid;
   place-items: center;
@@ -443,35 +458,88 @@ input[type="range"] {
 
 .element-props {
   display: grid;
-  gap: 4px;
-  font-size: 0.82rem;
-  color: var(--muted);
-}
-
-.badge-row {
-  display: flex;
-  flex-wrap: wrap;
   gap: 6px;
 }
 
-.badge {
-  border-radius: 999px;
-  padding: 4px 8px;
-  font-size: 0.74rem;
-  font-weight: 700;
-  background: rgba(255, 255, 255, 0.8);
+.element-prop-button,
+.element-prop-editor {
+  width: 100%;
+  min-height: 38px;
+  border-radius: 12px;
   border: 1px solid rgba(54, 45, 26, 0.12);
+  background: rgba(255, 255, 255, 0.82);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 
-.badge.endpoint {
-  background: rgba(11, 114, 133, 0.14);
+.element-prop-button {
+  appearance: none;
+  cursor: pointer;
+  color: var(--text);
+  font: inherit;
+}
+
+.element-prop-button:hover,
+.element-prop-editor:focus-within {
+  border-color: rgba(11, 114, 133, 0.36);
+  box-shadow: 0 0 0 3px rgba(11, 114, 133, 0.08);
+}
+
+.element-prop-label {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.element-prop-value {
+  font-weight: 700;
+  font-size: 0.84rem;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.element-prop-input {
+  min-width: 0;
+  width: 54px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 0.84rem;
+  line-height: 1.1;
+  font-weight: 700;
+  color: var(--text);
+  text-align: right;
+  outline: none;
+  appearance: textfield;
+  white-space: nowrap;
+}
+
+.element-prop-input::-webkit-outer-spin-button,
+.element-prop-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.element-prop-suffix {
   color: var(--accent);
+  font-size: 0.82rem;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .element-footer {
   margin-top: auto;
   display: flex;
   justify-content: flex-end;
+  align-items: flex-end;
 }
 
 .endpoint-button {
@@ -485,18 +553,13 @@ input[type="range"] {
   cursor: pointer;
   background: rgba(255, 255, 255, 0.85);
   color: var(--text);
+  min-width: 98px;
 }
 
 .endpoint-button.active {
   background: rgba(11, 114, 133, 0.14);
   color: var(--accent);
   border-color: rgba(11, 114, 133, 0.34);
-}
-
-.selection-panel {
-  margin-top: 18px;
-  padding-top: 18px;
-  border-top: 1px solid rgba(63, 54, 34, 0.08);
 }
 
 .messages {

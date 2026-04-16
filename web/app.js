@@ -19,10 +19,13 @@ const appState = {
   states: new Map(),
   results: new Map(),
   activeCalculatorId: null,
-  selectedEntity: null,
   computeTimer: null,
   plotTraceMeta: [],
   currentHoverSegmentId: null,
+  inlinePropertyEditor: null,
+  plotPointerMoveHandler: null,
+  plotPointerLeaveHandler: null,
+  activeModeOverlayIndices: null,
 };
 
 const dom = {
@@ -35,8 +38,6 @@ const dom = {
   builderPanel: document.getElementById("builder-panel"),
   builder: document.getElementById("builder"),
   builderHint: document.getElementById("builder-hint"),
-  inspectorPanel: document.getElementById("inspector-panel"),
-  inspector: document.getElementById("inspector"),
   plot: document.getElementById("plot"),
   plotReadout: document.getElementById("plot-readout"),
   messages: document.getElementById("messages"),
@@ -129,6 +130,53 @@ function formatNumber(value, digits = 3) {
 }
 
 
+function formatCompactNumber(value, digits = 3) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return String(value);
+  }
+  const rounded = Number(number.toFixed(digits));
+  return String(rounded);
+}
+
+
+function clamp(value, minimum, maximum) {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+
+function hexToRgba(hexColor, alpha) {
+  const hex = hexColor.replace("#", "");
+  const normalized = hex.length === 3
+    ? hex.split("").map((part) => part + part).join("")
+    : hex;
+  const red = parseInt(normalized.slice(0, 2), 16);
+  const green = parseInt(normalized.slice(2, 4), 16);
+  const blue = parseInt(normalized.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
+
+function clearInlinePropertyEditor() {
+  appState.inlinePropertyEditor = null;
+}
+
+
+function setElementFieldValue(item, key, value) {
+  if (key === "reflection") {
+    const reflection = clamp(Number(value), 0, 1);
+    item.reflection = reflection;
+    return;
+  }
+  if (key === "transmission") {
+    const transmission = clamp(Number(value), 0, 1);
+    item.reflection = Number((1 - transmission).toFixed(12));
+    return;
+  }
+  item[key] = value;
+}
+
+
 function nextUniqueId(kind, elements) {
   const prefix = {
     curved_surface: "mirror",
@@ -158,7 +206,6 @@ function defaultElement(kind, state) {
     kind,
     label: `${labels[kind] || "Element"} ${count}`,
     reflection: kind === "curved_surface" ? 0.95 : 0.0,
-    transmission: kind === "curved_surface" ? 0.05 : 1.0,
   };
   if (kind === "curved_surface") {
     base.radius_mm = 50.0;
@@ -200,28 +247,34 @@ function reconcileEndpoints(state) {
 
 
 function ensureValidSelection() {
-  const schema = getActiveSchema();
   const calculatorState = getActiveState();
-  if (!schema || !calculatorState || schema.layout !== "optical_axis") {
-    appState.selectedEntity = null;
+  if (!calculatorState) {
+    clearInlinePropertyEditor();
     return;
   }
 
-  if (!appState.selectedEntity) {
-    return;
-  }
-
-  if (appState.selectedEntity.type === "element" && appState.selectedEntity.index >= calculatorState.elements.length) {
-    appState.selectedEntity = null;
-  }
-  if (appState.selectedEntity.type === "gap" && appState.selectedEntity.index >= calculatorState.gaps.length) {
-    appState.selectedEntity = null;
-  }
   if (
-    appState.selectedEntity.type === "environment" &&
-    !["left", "right"].includes(appState.selectedEntity.side)
+    appState.inlinePropertyEditor &&
+    (
+      (
+        appState.inlinePropertyEditor.entityType === "element" &&
+        (
+          appState.inlinePropertyEditor.index >= calculatorState.elements.length ||
+          !calculatorState.elements[appState.inlinePropertyEditor.index] ||
+          calculatorState.elements[appState.inlinePropertyEditor.index].kind !== appState.inlinePropertyEditor.kind
+        )
+      ) ||
+      (
+        appState.inlinePropertyEditor.entityType === "gap" &&
+        appState.inlinePropertyEditor.index >= calculatorState.gaps.length
+      ) ||
+      (
+        appState.inlinePropertyEditor.entityType === "environment" &&
+        !["left", "right"].includes(appState.inlinePropertyEditor.side)
+      )
+    )
   ) {
-    appState.selectedEntity = null;
+    clearInlinePropertyEditor();
   }
 }
 
@@ -248,7 +301,7 @@ function updateGlobalField(path, value) {
 
 function updateElementField(index, key, value) {
   const nextState = deepCopy(getActiveState());
-  nextState.elements[index][key] = value;
+  setElementFieldValue(nextState.elements[index], key, value);
   commitState(nextState);
 }
 
@@ -325,7 +378,7 @@ function insertElementAt(zoneIndex, kind) {
   }
 
   renumberGapLabels(nextState);
-  appState.selectedEntity = { type: "element", index: zoneIndex };
+  clearInlinePropertyEditor();
   commitState(nextState);
 }
 
@@ -347,7 +400,7 @@ function moveElement(sourceIndex, zoneIndex) {
     targetIndex -= 1;
   }
   nextState.elements.splice(targetIndex, 0, item);
-  appState.selectedEntity = { type: "element", index: targetIndex };
+  clearInlinePropertyEditor();
   commitState(nextState);
 }
 
@@ -366,7 +419,7 @@ function swapElements(sourceIndex, targetIndex) {
   const temp = nextState.elements[sourceIndex];
   nextState.elements[sourceIndex] = nextState.elements[targetIndex];
   nextState.elements[targetIndex] = temp;
-  appState.selectedEntity = { type: "element", index: targetIndex };
+  clearInlinePropertyEditor();
   commitState(nextState);
 }
 
@@ -398,7 +451,7 @@ function deleteElement(index) {
   }
 
   renumberGapLabels(nextState);
-  appState.selectedEntity = null;
+  clearInlinePropertyEditor();
   commitState(nextState);
 }
 
@@ -560,7 +613,7 @@ function renderTabs() {
         return;
       }
       appState.activeCalculatorId = calculator.id;
-      appState.selectedEntity = null;
+      clearInlinePropertyEditor();
       appState.currentHoverSegmentId = null;
       renderApp();
       if (!appState.results.has(calculator.id)) {
@@ -724,85 +777,131 @@ function renderSummary() {
 }
 
 
-function renderInspector() {
-  const schema = getActiveSchema();
-  const calculatorState = getActiveState();
-  if (!schema || schema.layout !== "optical_axis") {
-    dom.inspectorPanel.style.display = "none";
+function elementPropertyDescriptors(item) {
+  const descriptors = [
+    {
+      key: "reflection",
+      label: "R",
+      kind: "fraction",
+      digits: 3,
+      step: 0.01,
+      min: 0.0,
+      max: 1.0,
+    },
+    {
+      key: "transmission",
+      label: "T",
+      kind: "fraction",
+      digits: 3,
+      step: 0.01,
+      min: 0.0,
+      max: 1.0,
+    },
+  ];
+
+  if (item.kind === "curved_surface") {
+    descriptors.unshift({
+      key: "radius_mm",
+      label: "ROC",
+      kind: "length",
+      digits: 3,
+      step: 0.1,
+      unit: "mm",
+    });
+  }
+
+  if (item.kind === "lens") {
+    descriptors.unshift({
+      key: "focal_length_mm",
+      label: "f",
+      kind: "length",
+      digits: 3,
+      step: 0.1,
+      unit: "mm",
+    });
+  }
+
+  return descriptors;
+}
+
+
+function gapPropertyDescriptors() {
+  return [
+    {
+      key: "refractive_index",
+      label: "n",
+      kind: "number",
+      digits: 4,
+      step: 0.001,
+      minimum: 1e-6,
+      suffix: "",
+    },
+    {
+      key: "distance_mm",
+      label: "d",
+      kind: "length_mm",
+      digits: 3,
+      step: 0.1,
+      minimum: 0.0,
+      suffix: "mm",
+    },
+  ];
+}
+
+
+function environmentPropertyDescriptors() {
+  return [
+    {
+      key: "refractive_index",
+      label: "n",
+      kind: "number",
+      digits: 4,
+      step: 0.001,
+      minimum: 1e-6,
+      suffix: "",
+    },
+  ];
+}
+
+
+function inlineEditorMatches(editorState) {
+  return Boolean(
+    appState.inlinePropertyEditor &&
+    Object.entries(editorState).every(([key, value]) => appState.inlinePropertyEditor[key] === value)
+  );
+}
+
+
+function openInlinePropertyEditor(editorState) {
+  appState.inlinePropertyEditor = editorState;
+  renderApp();
+}
+
+
+function closeInlinePropertyEditor({ rerender = false } = {}) {
+  clearInlinePropertyEditor();
+  if (rerender) {
+    renderApp();
+  }
+}
+
+
+function commitInlinePropertyEditor(rawValue, descriptor, onCommit) {
+  const parsedValue = Number(rawValue);
+  if (!Number.isFinite(parsedValue)) {
+    closeInlinePropertyEditor({ rerender: true });
     return;
   }
 
-  dom.inspectorPanel.style.display = "";
-
-  if (!appState.selectedEntity) {
-    dom.inspector.replaceChildren(
-      element("p", {
-        className: "empty-state",
-        text: "Click an element, a gap, or an environment card to edit its parameters.",
-      }),
-    );
-    return;
+  let nextValue = parsedValue;
+  if (descriptor.minimum !== undefined) {
+    nextValue = Math.max(descriptor.minimum, nextValue);
   }
-
-  if (appState.selectedEntity.type === "element") {
-    const index = appState.selectedEntity.index;
-    const item = calculatorState.elements[index];
-    const fields = schema.element_forms[item.kind] || [];
-    dom.inspector.replaceChildren(
-      element("div", {
-        children: [
-          element("p", { className: "summary-label", text: item.kind.replaceAll("_", " ") }),
-          element("h3", { text: item.label }),
-        ],
-      }),
-      ...fields.map((field) =>
-        renderField(field, item[field.key], (nextValue) => {
-          updateElementField(index, field.key, nextValue);
-        }, calculatorState)
-      ),
-    );
-    return;
+  if (descriptor.maximum !== undefined) {
+    nextValue = Math.min(descriptor.maximum, nextValue);
   }
-
-  if (appState.selectedEntity.type === "gap") {
-    const index = appState.selectedEntity.index;
-    const item = calculatorState.gaps[index];
-    dom.inspector.replaceChildren(
-      element("div", {
-        children: [
-          element("p", { className: "summary-label", text: "gap" }),
-          element("h3", { text: item.label }),
-        ],
-      }),
-      ...schema.gap_fields.map((field) =>
-        renderField(field, item[field.key], (nextValue) => {
-          updateGapField(index, field.key, nextValue);
-        }, calculatorState)
-      ),
-    );
-    return;
-  }
-
-  if (appState.selectedEntity.type === "environment") {
-    const side = appState.selectedEntity.side;
-    const label = side === "left" ? "Left environment" : "Right environment";
-    const value = side === "left"
-      ? calculatorState.globals.left_environment_n
-      : calculatorState.globals.right_environment_n;
-    dom.inspector.replaceChildren(
-      element("div", {
-        children: [
-          element("p", { className: "summary-label", text: "environment" }),
-          element("h3", { text: label }),
-        ],
-      }),
-      ...schema.environment_fields.map((field) =>
-        renderField(field, value, (nextValue) => {
-          updateEnvironmentField(side, field.key, nextValue);
-        }, calculatorState)
-      ),
-    );
-  }
+  closeInlinePropertyEditor();
+  onCommit(nextValue);
 }
 
 
@@ -859,16 +958,24 @@ function attachElementSwapHandlers(node, index) {
 
 
 function createEnvironmentCard(side, calculatorState) {
-  const selected = appState.selectedEntity
-    && appState.selectedEntity.type === "environment"
-    && appState.selectedEntity.side === side;
   const refractiveIndex = side === "left"
     ? calculatorState.globals.left_environment_n
     : calculatorState.globals.right_environment_n;
   const node = element("div", {
-    className: `environment-card gap-card${selected ? " selected" : ""}`,
+    className: "environment-card gap-card",
     children: [
-      element("div", { className: "gap-pill", text: `n = ${formatNumber(refractiveIndex, 3)}` }),
+      createInlinePropertyNode({
+        editorState: {
+          entityType: "environment",
+          side,
+          key: "refractive_index",
+        },
+        descriptor: environmentPropertyDescriptors()[0],
+        value: refractiveIndex,
+        onCommit: (nextValue) => updateEnvironmentField(side, "refractive_index", nextValue),
+        buttonClassName: "gap-pill gap-prop-button",
+        editorClassName: "gap-pill gap-prop-editor",
+      }),
       element("div", {
         className: "gap-core",
         children: [element("div", { className: "edge-label", text: side === "left" ? "Left boundary" : "Right boundary" })],
@@ -876,58 +983,170 @@ function createEnvironmentCard(side, calculatorState) {
       element("div", { className: "gap-pill", text: side === "left" ? "Insert at start" : "Insert at end" }),
     ],
   });
-  node.addEventListener("click", () => {
-    appState.selectedEntity = { type: "environment", side };
-    renderApp();
-  });
   attachZoneDropHandlers(node, side === "left" ? 0 : calculatorState.elements.length);
   return node;
 }
 
 
 function createGapCard(gap, index) {
-  const selected = appState.selectedEntity
-    && appState.selectedEntity.type === "gap"
-    && appState.selectedEntity.index === index;
+  const [indexDescriptor, distanceDescriptor] = gapPropertyDescriptors();
   const node = element("div", {
-    className: `gap-card${selected ? " selected" : ""}`,
+    className: "gap-card",
     children: [
-      element("div", { className: "gap-pill", text: `n = ${formatNumber(gap.refractive_index, 3)}` }),
+      createInlinePropertyNode({
+        editorState: {
+          entityType: "gap",
+          index,
+          key: "refractive_index",
+        },
+        descriptor: indexDescriptor,
+        value: gap.refractive_index,
+        onCommit: (nextValue) => updateGapField(index, "refractive_index", nextValue),
+        buttonClassName: "gap-pill gap-prop-button",
+        editorClassName: "gap-pill gap-prop-editor",
+      }),
       element("div", {
         className: "gap-core",
         children: [element("div", { className: "edge-label", text: gap.label })],
       }),
-      element("div", { className: "gap-pill", text: `${formatNumber(gap.distance_mm, 2)} mm` }),
+      createInlinePropertyNode({
+        editorState: {
+          entityType: "gap",
+          index,
+          key: "distance_mm",
+        },
+        descriptor: distanceDescriptor,
+        value: gap.distance_mm,
+        onCommit: (nextValue) => updateGapField(index, "distance_mm", nextValue),
+        buttonClassName: "gap-pill gap-prop-button",
+        editorClassName: "gap-pill gap-prop-editor",
+      }),
     ],
-  });
-  node.addEventListener("click", () => {
-    appState.selectedEntity = { type: "gap", index };
-    renderApp();
   });
   attachZoneDropHandlers(node, index + 1);
   return node;
 }
 
 
+function formatInlinePropertyValue(value, descriptor) {
+  const formatted = formatCompactNumber(value, descriptor.digits || 3);
+  return descriptor.suffix ? `${formatted} ${descriptor.suffix}` : formatted;
+}
+
+
+function createInlinePropertyDisplay({ editorState, descriptor, value, onOpen, className = "element-prop-button" }) {
+  const propertyButton = element("button", {
+    className,
+    attrs: { type: "button", draggable: "false" },
+    children: [
+      element("span", { className: "element-prop-label", text: `${descriptor.label} =` }),
+      element("span", {
+        className: "element-prop-value",
+        text: formatInlinePropertyValue(value, descriptor),
+      }),
+    ],
+  });
+  propertyButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    onOpen(editorState);
+  });
+  propertyButton.addEventListener("pointerdown", (event) => event.stopPropagation());
+  propertyButton.addEventListener("dragstart", (event) => event.preventDefault());
+  return propertyButton;
+}
+
+
+function createInlinePropertyEditor({ editorState, descriptor, value, onCommit, className = "element-prop-editor" }) {
+  const editor = element("div", {
+    className,
+    attrs: { tabindex: "-1" },
+  });
+  const label = element("span", { className: "element-prop-label", text: `${descriptor.label} =` });
+  const input = element("input", {
+    className: "element-prop-input",
+    attrs: {
+      type: "number",
+      step: descriptor.step || 0.01,
+      value: formatCompactNumber(value, 6),
+      min: descriptor.minimum,
+      max: descriptor.maximum,
+    },
+  });
+
+  const commit = () => {
+    commitInlinePropertyEditor(input.value, descriptor, onCommit);
+  };
+
+  const cancel = () => {
+    closeInlinePropertyEditor({ rerender: true });
+  };
+
+  editor.append(label, input);
+  if (descriptor.suffix) {
+    editor.append(element("span", { className: "element-prop-suffix", text: descriptor.suffix }));
+  }
+  editor.addEventListener("click", (event) => event.stopPropagation());
+  editor.addEventListener("pointerdown", (event) => event.stopPropagation());
+  editor.addEventListener("dragstart", (event) => event.preventDefault());
+  editor.addEventListener("focusout", (event) => {
+    if (event.relatedTarget && editor.contains(event.relatedTarget)) {
+      return;
+    }
+    commit();
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commit();
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      cancel();
+    }
+  });
+  input.addEventListener("pointerdown", (event) => event.stopPropagation());
+  input.addEventListener("dragstart", (event) => event.preventDefault());
+
+  window.requestAnimationFrame(() => {
+    input.focus();
+    input.select();
+  });
+
+  return editor;
+}
+
+
+function createInlinePropertyNode({ editorState, descriptor, value, onCommit, buttonClassName, editorClassName }) {
+  if (inlineEditorMatches(editorState)) {
+    return createInlinePropertyEditor({
+      editorState,
+      descriptor,
+      value,
+      onCommit,
+      className: editorClassName || "element-prop-editor",
+    });
+  }
+  return createInlinePropertyDisplay({
+    editorState,
+    descriptor,
+    value,
+    onOpen: openInlinePropertyEditor,
+    className: buttonClassName || "element-prop-button",
+  });
+}
+
+
 function createElementCard(item, index, calculatorState) {
-  const selected = appState.selectedEntity
-    && appState.selectedEntity.type === "element"
-    && appState.selectedEntity.index === index;
   const endpoints = calculatorState.globals.endpoint_ids || [];
+  const transmission = Number((1 - Number(item.reflection || 0)).toFixed(12));
 
   const titleInput = element("input", {
     className: "element-title-input",
     attrs: { type: "text", value: item.label, draggable: "false" },
   });
-  titleInput.addEventListener("click", (event) => {
-    event.stopPropagation();
-    appState.selectedEntity = { type: "element", index };
-  });
+  titleInput.addEventListener("click", (event) => event.stopPropagation());
   titleInput.addEventListener("pointerdown", (event) => event.stopPropagation());
   titleInput.addEventListener("dragstart", (event) => event.preventDefault());
-  titleInput.addEventListener("focus", () => {
-    appState.selectedEntity = { type: "element", index };
-  });
   titleInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       titleInput.blur();
@@ -948,8 +1167,8 @@ function createElementCard(item, index, calculatorState) {
 
   const deleteButton = element("button", {
     className: "icon-button",
-    text: "x",
-    attrs: { type: "button", title: "Delete element" },
+    html: "&times;",
+    attrs: { type: "button", title: "Delete element", "aria-label": "Delete element" },
   });
   deleteButton.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -959,7 +1178,7 @@ function createElementCard(item, index, calculatorState) {
 
   const endpointButton = element("button", {
     className: `endpoint-button${endpoints.includes(item.id) ? " active" : ""}`,
-    text: endpoints.includes(item.id) ? "Unset endpoint" : "Set endpoint",
+    text: endpoints.includes(item.id) ? "Endpoint" : "Set endpoint",
     attrs: { type: "button" },
   });
   endpointButton.addEventListener("click", (event) => {
@@ -969,7 +1188,7 @@ function createElementCard(item, index, calculatorState) {
   endpointButton.addEventListener("dragstart", (event) => event.preventDefault());
 
   const node = element("div", {
-    className: `element-card${selected ? " selected" : ""}`,
+    className: "element-card",
     attrs: { draggable: "true" },
     children: [
       element("div", {
@@ -978,25 +1197,32 @@ function createElementCard(item, index, calculatorState) {
       }),
       element("div", { className: "element-kind", text: item.kind.replaceAll("_", " ") }),
       element("div", {
-        className: "badge-row",
-        children: endpoints.includes(item.id)
-          ? [element("span", { className: "badge endpoint", text: "Endpoint" })]
-          : [],
-      }),
-      element("div", {
         className: "element-props",
-        children: summarizeElement(item).map((line) => element("div", { text: line })),
+        children: elementPropertyDescriptors(item).map((descriptor) =>
+          createInlinePropertyNode({
+            editorState: {
+              entityType: "element",
+              index,
+              key: descriptor.key,
+              kind: item.kind,
+            },
+            descriptor: {
+              ...descriptor,
+              kind: descriptor.kind === "length" ? "length_mm" : descriptor.kind,
+              minimum: descriptor.min,
+              maximum: descriptor.max,
+              suffix: descriptor.kind === "length" ? "mm" : "",
+            },
+            value: descriptor.key === "transmission" ? transmission : item[descriptor.key],
+            onCommit: (nextValue) => updateElementField(index, descriptor.key, nextValue),
+          })
+        ),
       }),
       element("div", {
         className: "element-footer",
         children: [endpointButton],
       }),
     ],
-  });
-
-  node.addEventListener("click", () => {
-    appState.selectedEntity = { type: "element", index };
-    renderApp();
   });
 
   node.addEventListener("dragstart", (event) => {
@@ -1080,21 +1306,6 @@ function renderAxisBuilder() {
 }
 
 
-function summarizeElement(item) {
-  const lines = [
-    `R = ${formatNumber(item.reflection, 3)}`,
-    `T = ${formatNumber(item.transmission, 3)}`,
-  ];
-  if (item.kind === "curved_surface") {
-    lines.unshift(`ROC = ${formatNumber(item.radius_mm, 2)} mm`);
-  }
-  if (item.kind === "lens") {
-    lines.unshift(`f = ${formatNumber(item.focal_length_mm, 2)} mm`);
-  }
-  return lines;
-}
-
-
 function renderMessages() {
   const result = getActiveResult();
   const messages = [];
@@ -1119,7 +1330,7 @@ function renderMessages() {
     if (result.ok) {
       messages.push(element("div", {
         className: "message info",
-        text: "Hover a beam segment to inspect the current cross-section, see the active segment waist, and compare outgoing beams.",
+        text: "Edit element, gap, and boundary parameters directly in place. Move anywhere across the plot to inspect the active interval and its local Gaussian-beam data.",
       }));
     }
   }
@@ -1224,8 +1435,8 @@ function collectXCoordinates(plot) {
 function defaultPlotReadout(plot, result) {
   if (plot.segments && plot.segments.length) {
     return {
-      title: "Hover a segment",
-      body: "Move over the beam envelope to lock a vertical cursor to the local x position and inspect the active segment waist, waist position, and spot size.",
+      title: "Move across the plot",
+      body: "A vertical cursor will follow your mouse anywhere inside the plotting area. The active interval will show its local Gaussian mode as a solid segment, with dashed continuation outside that interval and a waist marker when visible.",
     };
   }
   if (result && result.error) {
@@ -1281,6 +1492,47 @@ function interpolateSegmentSpot(segment, xValue) {
 }
 
 
+function gaussianEnvelopeFromSegment(segment, xValues) {
+  const waistRadius = Number(segment.waist_radius_um);
+  const waistPosition = Number(segment.waist_position_mm);
+  const rayleighRange = Math.max(1e-9, Math.abs(Number(segment.rayleigh_range_mm)));
+  return xValues.map((xValue) => waistRadius * Math.sqrt(1 + ((xValue - waistPosition) / rayleighRange) ** 2));
+}
+
+
+function plotXBounds(plot) {
+  const coordinates = collectXCoordinates(plot);
+  const xMin = Math.min(...coordinates);
+  const xMax = Math.max(...coordinates);
+  const span = Math.max(1.0, xMax - xMin);
+  return {
+    xMin: xMin - 0.03 * span,
+    xMax: xMax + 0.03 * span,
+  };
+}
+
+
+function sampleLocalModeOverlay(plot, segment) {
+  const { xMin, xMax } = plotXBounds(plot);
+  const xStart = Math.min(segment.x_start_mm, segment.x_end_mm);
+  const xEnd = Math.max(segment.x_start_mm, segment.x_end_mm);
+
+  const leftX = xMin < xStart ? linspace(xMin, xStart, 80) : [];
+  const insideX = linspace(xStart, xEnd, 120);
+  const rightX = xEnd < xMax ? linspace(xEnd, xMax, 80) : [];
+
+  return {
+    leftX,
+    leftY: gaussianEnvelopeFromSegment(segment, leftX),
+    insideX,
+    insideY: gaussianEnvelopeFromSegment(segment, insideX),
+    rightX,
+    rightY: gaussianEnvelopeFromSegment(segment, rightX),
+    waistInBounds: segment.waist_position_mm >= xMin && segment.waist_position_mm <= xMax,
+  };
+}
+
+
 function buildHoverReadout(segment, xValue) {
   const spotSizeUm = interpolateSegmentSpot(segment, xValue);
   return {
@@ -1288,10 +1540,104 @@ function buildHoverReadout(segment, xValue) {
     body:
       `x = <strong>${formatNumber(xValue, 3)} mm</strong><br>` +
       `spot size = <strong>${formatNumber(spotSizeUm, 3)} um</strong><br>` +
-      `segment waist = <strong>${formatNumber(segment.waist_radius_um, 3)} um</strong><br>` +
-      `waist position = <strong>${formatNumber(segment.waist_position_mm, 3)} mm</strong><br>` +
+      `local waist w0 = <strong>${formatNumber(segment.waist_radius_um, 3)} um</strong><br>` +
+      `local waist x0 = <strong>${formatNumber(segment.waist_position_mm, 3)} mm</strong><br>` +
       `Rayleigh range = <strong>${formatNumber(segment.rayleigh_range_mm, 3)} mm</strong><br>` +
       `n = <strong>${formatNumber(segment.refractive_index, 4)}</strong>`,
+  };
+}
+
+
+function updateActiveModeOverlay(plot, segment) {
+  if (!(appState.activeModeOverlayIndices && dom.plot)) {
+    return;
+  }
+
+  if (!segment) {
+    const empty = [[], [], [], [], [], [], [], []];
+    Plotly.restyle(dom.plot, { x: empty, y: empty, text: [[], [], [], [], [], [], [], []] }, appState.activeModeOverlayIndices);
+    return;
+  }
+
+  const overlay = sampleLocalModeOverlay(plot, segment);
+  const fillX = [...overlay.insideX, ...[...overlay.insideX].reverse()];
+  const fillY = [...overlay.insideY, ...[...overlay.insideY].reverse().map((value) => -value)];
+  const waistLabel = `x0 = ${formatNumber(segment.waist_position_mm, 3)} mm<br>w = ${formatNumber(segment.waist_radius_um, 3)} um`;
+  const waistX = overlay.waistInBounds ? [segment.waist_position_mm] : [];
+  const waistY = overlay.waistInBounds ? [0] : [];
+  const waistText = overlay.waistInBounds ? [waistLabel] : [];
+
+  Plotly.restyle(dom.plot, {
+    x: [
+      fillX,
+      overlay.insideX,
+      overlay.insideX,
+      overlay.leftX,
+      overlay.leftX,
+      overlay.rightX,
+      overlay.rightX,
+      waistX,
+    ],
+    y: [
+      fillY,
+      overlay.insideY,
+      overlay.insideY.map((value) => -value),
+      overlay.leftY,
+      overlay.leftY.map((value) => -value),
+      overlay.rightY,
+      overlay.rightY.map((value) => -value),
+      waistY,
+    ],
+    text: [
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      waistText,
+    ],
+    "line.color": [
+      hexToRgba(segment.color, 0),
+      segment.color,
+      segment.color,
+      segment.color,
+      segment.color,
+      segment.color,
+      segment.color,
+      "#111111",
+    ],
+    fillcolor: [
+      hexToRgba(segment.color, 0.22),
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    ],
+    "marker.color": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      "#111111",
+    ],
+  }, appState.activeModeOverlayIndices);
+}
+
+
+function buildCursorOnlyReadout(xValue) {
+  return {
+    title: "No beam segment at this x",
+    body:
+      `x = <strong>${formatNumber(xValue, 3)} mm</strong><br>` +
+      "Move the cursor onto an interval that contains a propagated beam segment to inspect its local mode data.",
   };
 }
 
@@ -1310,41 +1656,113 @@ function buildBaseShapes(plot, yMax) {
 }
 
 
-function setBeamTraceOpacity(segmentId) {
+function restyleBeamTraces(segmentId = null) {
   if (!appState.plotTraceMeta.length) {
     return;
   }
   const opacities = appState.plotTraceMeta.map((meta) => {
-    if (meta.kind !== "beam") {
+    if (meta.kind === "beam-fill") {
+      if (!segmentId) {
+        return meta.baseOpacity || 0.18;
+      }
+      return 0.05;
+    }
+    if (meta.kind !== "beam-line") {
       return 1;
     }
-    return meta.segmentId === segmentId ? 1 : 0.16;
+    if (!segmentId) {
+      return 1;
+    }
+    return 0.14;
   });
-  Plotly.restyle(dom.plot, "opacity", opacities);
+  const dashes = appState.plotTraceMeta.map((meta) => {
+    if (meta.kind !== "beam-line") {
+      return meta.baseDash || "solid";
+    }
+    return meta.baseDash || "solid";
+  });
+  const widths = appState.plotTraceMeta.map((meta) => {
+    if (meta.kind !== "beam-line") {
+      return meta.baseWidth || 3;
+    }
+    if (!segmentId) {
+      return 4;
+    }
+    return 3.0;
+  });
+  Plotly.restyle(dom.plot, {
+    opacity: opacities,
+    "line.dash": dashes,
+    "line.width": widths,
+  });
 }
 
 
-function resetBeamTraceOpacity() {
-  if (!appState.plotTraceMeta.length) {
-    return;
+function segmentContainsX(segment, xValue) {
+  const minimum = Math.min(segment.x_start_mm, segment.x_end_mm) - 1e-9;
+  const maximum = Math.max(segment.x_start_mm, segment.x_end_mm) + 1e-9;
+  return xValue >= minimum && xValue <= maximum;
+}
+
+
+function findSegmentAtX(plot, xValue, preferredSegmentId = null) {
+  const segments = plot.segments || [];
+  if (!segments.length) {
+    return null;
   }
-  const opacities = appState.plotTraceMeta.map(() => 1);
-  Plotly.restyle(dom.plot, "opacity", opacities);
+
+  if (preferredSegmentId) {
+    const preferred = segments.find((segment) => segment.id === preferredSegmentId);
+    if (preferred && segmentContainsX(preferred, xValue)) {
+      return preferred;
+    }
+  }
+
+  const containing = segments.filter((segment) => segmentContainsX(segment, xValue));
+  if (!containing.length) {
+    return null;
+  }
+  if (containing.length === 1) {
+    return containing[0];
+  }
+
+  return containing.reduce((best, candidate) => {
+    const bestCenter = 0.5 * (best.x_start_mm + best.x_end_mm);
+    const candidateCenter = 0.5 * (candidate.x_start_mm + candidate.x_end_mm);
+    return Math.abs(candidateCenter - xValue) < Math.abs(bestCenter - xValue) ? candidate : best;
+  });
 }
 
 
-function applyPlotHover(plot, xValue, segmentId) {
+function getPlotPointerState(event) {
+  if (!(dom.plot && dom.plot._fullLayout && dom.plot._fullLayout.xaxis && dom.plot._fullLayout.yaxis)) {
+    return null;
+  }
+
+  const rect = dom.plot.getBoundingClientRect();
+  const xPixel = event.clientX - rect.left;
+  const xaxis = dom.plot._fullLayout.xaxis;
+  const xOffset = xaxis._offset || 0;
+  const xLength = xaxis._length || 0;
+  const clampedPixel = clamp(xPixel, xOffset, xOffset + xLength);
+
+  return {
+    xValue: xaxis.p2l(clampedPixel - xOffset),
+  };
+}
+
+
+function applyPlotCursor(plot, result, xValue) {
   if (!(plot.segments && plot.segments.length)) {
     return;
   }
-  const segment = plot.segments.find((item) => item.id === segmentId);
-  if (!segment) {
-    return;
-  }
 
-  appState.currentHoverSegmentId = segmentId;
-  setBeamTraceOpacity(segmentId);
-  setPlotReadout(buildHoverReadout(segment, xValue));
+  const segment = findSegmentAtX(plot, xValue, appState.currentHoverSegmentId);
+  const activeSegmentId = segment ? segment.id : null;
+  appState.currentHoverSegmentId = activeSegmentId;
+  restyleBeamTraces(activeSegmentId);
+  updateActiveModeOverlay(plot, segment);
+  setPlotReadout(segment ? buildHoverReadout(segment, xValue) : buildCursorOnlyReadout(xValue));
   Plotly.relayout(dom.plot, {
     shapes: [
       ...buildBaseShapes(plot, plot.y_max_um),
@@ -1363,7 +1781,8 @@ function applyPlotHover(plot, xValue, segmentId) {
 
 function clearPlotHover(plot, result) {
   appState.currentHoverSegmentId = null;
-  resetBeamTraceOpacity();
+  restyleBeamTraces(null);
+  updateActiveModeOverlay(plot, null);
   setPlotReadout(defaultPlotReadout(plot, result));
   Plotly.relayout(dom.plot, {
     shapes: buildBaseShapes(plot, plot.y_max_um),
@@ -1385,6 +1804,25 @@ function renderPlot() {
       const showLegend = !legendSeen.has(segment.branch);
       legendSeen.add(segment.branch);
       traces.push({
+        x: [...segment.x_mm, ...[...segment.x_mm].reverse()],
+        y: [...segment.y_um, ...[...segment.y_um].reverse().map((value) => -value)],
+        type: "scatter",
+        mode: "lines",
+        hoverinfo: "skip",
+        fill: "toself",
+        fillcolor: hexToRgba(segment.color, 0.18),
+        line: { color: hexToRgba(segment.color, 0.0), width: 0 },
+        showlegend: false,
+        opacity: 0.18,
+      });
+      traceMeta.push({
+        kind: "beam-fill",
+        segmentId: segment.id,
+        baseOpacity: 0.18,
+        baseDash: "solid",
+        baseWidth: 0,
+      });
+      traces.push({
         x: segment.x_mm,
         y: segment.y_um,
         type: "scatter",
@@ -1393,12 +1831,13 @@ function renderPlot() {
         text: segment.hover_text,
         hovertemplate: "%{text}<extra></extra>",
         customdata: segment.x_mm.map(() => segment.id),
-        line: { color: segment.color, width: 4, dash: segment.dash || "solid" },
+        hoverinfo: "skip",
+        line: { color: segment.color, width: 4, dash: "solid" },
         showlegend: showLegend,
         legendgroup: segment.branch,
         opacity: 1,
       });
-      traceMeta.push({ kind: "beam", segmentId: segment.id });
+      traceMeta.push({ kind: "beam-line", segmentId: segment.id, baseDash: "solid", baseWidth: 4 });
       traces.push({
         x: segment.x_mm,
         y: segment.y_um.map((value) => -value),
@@ -1407,12 +1846,13 @@ function renderPlot() {
         text: segment.hover_text,
         hovertemplate: "%{text}<extra></extra>",
         customdata: segment.x_mm.map(() => segment.id),
-        line: { color: segment.color, width: 4, dash: segment.dash || "solid" },
+        hoverinfo: "skip",
+        line: { color: segment.color, width: 4, dash: "solid" },
         showlegend: false,
         legendgroup: segment.branch,
         opacity: 1,
       });
-      traceMeta.push({ kind: "beam", segmentId: segment.id });
+      traceMeta.push({ kind: "beam-line", segmentId: segment.id, baseDash: "solid", baseWidth: 4 });
     }
   } else {
     for (const trace of plot.traces || []) {
@@ -1424,10 +1864,11 @@ function renderPlot() {
         name: trace.name,
         text: trace.hover_text,
         hovertemplate: "%{text}<extra></extra>",
+        hoverinfo: "skip",
         line: { color: trace.color, width: 4, dash: trace.dash || "solid" },
         opacity: 1,
       });
-      traceMeta.push({ kind: "beam", segmentId: null });
+      traceMeta.push({ kind: "beam-line", segmentId: null, baseDash: trace.dash || "solid", baseWidth: 4 });
       traces.push({
         x: trace.x_mm,
         y: trace.y_um.map((value) => -value),
@@ -1436,17 +1877,104 @@ function renderPlot() {
         showlegend: false,
         text: trace.hover_text,
         hovertemplate: "%{text}<extra></extra>",
+        hoverinfo: "skip",
         line: { color: trace.color, width: 4, dash: trace.dash || "solid" },
         opacity: 1,
       });
-      traceMeta.push({ kind: "beam", segmentId: null });
+      traceMeta.push({ kind: "beam-line", segmentId: null, baseDash: trace.dash || "solid", baseWidth: 4 });
     }
+  }
+
+  const activeModeOverlayIndices = [];
+  const overlayTraces = [
+    {
+      x: [],
+      y: [],
+      type: "scatter",
+      mode: "lines",
+      hoverinfo: "skip",
+      fill: "toself",
+      fillcolor: "rgba(0, 95, 115, 0.18)",
+      line: { color: "rgba(0,0,0,0)", width: 0 },
+      showlegend: false,
+    },
+    {
+      x: [],
+      y: [],
+      type: "scatter",
+      mode: "lines",
+      hoverinfo: "skip",
+      line: { color: "#005f73", width: 4.8, dash: "solid" },
+      showlegend: false,
+    },
+    {
+      x: [],
+      y: [],
+      type: "scatter",
+      mode: "lines",
+      hoverinfo: "skip",
+      line: { color: "#005f73", width: 4.8, dash: "solid" },
+      showlegend: false,
+    },
+    {
+      x: [],
+      y: [],
+      type: "scatter",
+      mode: "lines",
+      hoverinfo: "skip",
+      line: { color: "#005f73", width: 3.6, dash: "dash" },
+      showlegend: false,
+    },
+    {
+      x: [],
+      y: [],
+      type: "scatter",
+      mode: "lines",
+      hoverinfo: "skip",
+      line: { color: "#005f73", width: 3.6, dash: "dash" },
+      showlegend: false,
+    },
+    {
+      x: [],
+      y: [],
+      type: "scatter",
+      mode: "lines",
+      hoverinfo: "skip",
+      line: { color: "#005f73", width: 3.6, dash: "dash" },
+      showlegend: false,
+    },
+    {
+      x: [],
+      y: [],
+      type: "scatter",
+      mode: "lines",
+      hoverinfo: "skip",
+      line: { color: "#005f73", width: 3.6, dash: "dash" },
+      showlegend: false,
+    },
+    {
+      x: [],
+      y: [],
+      type: "scatter",
+      mode: "markers+text",
+      text: [],
+      textposition: "top center",
+      hoverinfo: "skip",
+      marker: { color: "#111111", size: 9 },
+      textfont: { size: 12, color: "#111111" },
+      showlegend: false,
+    },
+  ];
+  for (const trace of overlayTraces) {
+    activeModeOverlayIndices.push(traces.length);
+    traces.push(trace);
+    traceMeta.push({ kind: "overlay", segmentId: null, baseDash: trace.line ? trace.line.dash || "solid" : "solid", baseWidth: trace.line ? trace.line.width || 0 : 0 });
   }
 
   const elementPlot = buildElementPlotTraces(plot, yMax);
   for (const trace of elementPlot.traces) {
     traces.push(trace);
-    traceMeta.push({ kind: "decoration", segmentId: null });
+    traceMeta.push({ kind: "decoration", segmentId: null, baseDash: "solid", baseWidth: 3 });
   }
 
   if (plot.waist_marker) {
@@ -1461,7 +1989,7 @@ function renderPlot() {
       hovertemplate: "Waist<br>x = %{x:.3f} mm<extra></extra>",
       name: "Waist",
     });
-    traceMeta.push({ kind: "decoration", segmentId: null });
+    traceMeta.push({ kind: "decoration", segmentId: null, baseDash: "solid", baseWidth: 0 });
   }
 
   const layout = {
@@ -1483,8 +2011,8 @@ function renderPlot() {
       zeroline: false,
       gridcolor: "rgba(36, 31, 23, 0.1)",
     },
-    hovermode: "closest",
-    hoverdistance: 30,
+    hovermode: false,
+    hoverdistance: -1,
     legend: {
       orientation: "h",
       x: 1,
@@ -1496,6 +2024,7 @@ function renderPlot() {
   };
 
   appState.plotTraceMeta = traceMeta;
+  appState.activeModeOverlayIndices = activeModeOverlayIndices;
   Plotly.react(dom.plot, traces, layout, {
     responsive: true,
     displaylogo: false,
@@ -1507,20 +2036,29 @@ function renderPlot() {
     dom.plot.removeAllListeners("plotly_unhover");
   }
 
-  dom.plot.on("plotly_hover", (event) => {
-    if (!(plot.segments && plot.segments.length) || !(event.points && event.points.length)) {
+  if (appState.plotPointerMoveHandler) {
+    dom.plot.removeEventListener("mousemove", appState.plotPointerMoveHandler);
+  }
+  if (appState.plotPointerLeaveHandler) {
+    dom.plot.removeEventListener("mouseleave", appState.plotPointerLeaveHandler);
+  }
+
+  appState.plotPointerMoveHandler = (event) => {
+    const pointerState = getPlotPointerState(event);
+    if (!pointerState) {
       return;
     }
-    const point = event.points[0];
-    applyPlotHover(plot, point.x, point.customdata);
-  });
-
-  dom.plot.on("plotly_unhover", () => {
+    applyPlotCursor(plot, result, pointerState.xValue);
+  };
+  appState.plotPointerLeaveHandler = () => {
     if (!(plot.segments && plot.segments.length)) {
       return;
     }
     clearPlotHover(plot, result);
-  });
+  };
+
+  dom.plot.addEventListener("mousemove", appState.plotPointerMoveHandler);
+  dom.plot.addEventListener("mouseleave", appState.plotPointerLeaveHandler);
 
   setPlotReadout(defaultPlotReadout(plot, result));
 }
@@ -1539,13 +2077,12 @@ function renderApp() {
   dom.calculatorDescription.textContent = calculator.description;
   dom.builderHint.textContent =
     schema.layout === "optical_axis"
-      ? "Drag components onto the axis, drop onto other elements to swap them, click titles to rename, toggle endpoints on cards, and click cards or gaps to edit parameters."
+      ? "Drag components onto the axis, drop onto other elements to swap them, rename components at the title, edit all optics and gap parameters directly in place, and move across the plot to inspect the active interval."
       : "Adjust the control values to run the selected calculator in the browser-side Python runtime.";
 
   renderGlobalControls();
   renderSummary();
   renderAxisBuilder();
-  renderInspector();
   renderPlot();
   renderMessages();
 }

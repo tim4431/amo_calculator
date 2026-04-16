@@ -28,7 +28,6 @@ _DEFAULT_STATE: dict[str, Any] = {
             "label": "M1",
             "radius_mm": 80.0,
             "reflection": 0.95,
-            "transmission": 0.05,
         },
         {
             "id": "m2",
@@ -36,7 +35,6 @@ _DEFAULT_STATE: dict[str, Any] = {
             "label": "M2",
             "radius_mm": -80.0,
             "reflection": 0.95,
-            "transmission": 0.05,
         },
     ],
     "gaps": [
@@ -138,29 +136,11 @@ class CavityModeCalculator(CalculatorDefinition):
                         "step": 0.01,
                         "unit": "",
                     },
-                    {
-                        "key": "transmission",
-                        "label": "Transmission",
-                        "type": "range_number",
-                        "min": 0.0,
-                        "max": 1.0,
-                        "step": 0.01,
-                        "unit": "",
-                    },
                 ],
                 "plane_surface": [
                     {
                         "key": "reflection",
                         "label": "Reflection",
-                        "type": "range_number",
-                        "min": 0.0,
-                        "max": 1.0,
-                        "step": 0.01,
-                        "unit": "",
-                    },
-                    {
-                        "key": "transmission",
-                        "label": "Transmission",
                         "type": "range_number",
                         "min": 0.0,
                         "max": 1.0,
@@ -179,15 +159,6 @@ class CavityModeCalculator(CalculatorDefinition):
                     {
                         "key": "reflection",
                         "label": "Reflection",
-                        "type": "range_number",
-                        "min": 0.0,
-                        "max": 1.0,
-                        "step": 0.01,
-                        "unit": "",
-                    },
-                    {
-                        "key": "transmission",
-                        "label": "Transmission",
                         "type": "range_number",
                         "min": 0.0,
                         "max": 1.0,
@@ -333,12 +304,14 @@ class CavityModeCalculator(CalculatorDefinition):
             used_ids.add(element_id)
 
             label = str(raw.get("label") or f"{_kind_title(kind)} {kind_counts[kind]}")
+            reflection_value = raw.get("reflection")
+            if reflection_value is None and raw.get("transmission") is not None:
+                reflection_value = 1.0 - _safe_float(raw.get("transmission"), 1.0)
             element = {
                 "id": element_id,
                 "kind": kind,
                 "label": label,
-                "reflection": _clamped_float(raw.get("reflection"), 0.0, 0.0, 1.0),
-                "transmission": _clamped_float(raw.get("transmission"), 1.0, 0.0, 1.0),
+                "reflection": _clamped_float(reflection_value, 0.0, 0.0, 1.0),
             }
             if kind == "curved_surface":
                 radius_mm = _safe_float(raw.get("radius_mm"), 50.0)
@@ -406,6 +379,7 @@ class CavityModeCalculator(CalculatorDefinition):
             elements.append(
                 {
                     **item,
+                    "transmission": 1.0 - item["reflection"],
                     "position_mm": positions_mm[idx],
                     "kind_title": _kind_title(item["kind"]),
                     "is_endpoint": item["id"] in endpoint_ids,
@@ -472,14 +446,12 @@ class CavityModeCalculator(CalculatorDefinition):
                     radius=1e-3 * item["radius_mm"],
                     label=item["label"],
                     reflection=item["reflection"],
-                    transmission=item["transmission"],
                 )
             elif item["kind"] == "plane_surface":
                 ref = axis.add_plane_surface(
                     position=position_m,
                     label=item["label"],
                     reflection=item["reflection"],
-                    transmission=item["transmission"],
                 )
             elif item["kind"] == "lens":
                 ref = axis.add_lens(
@@ -487,7 +459,6 @@ class CavityModeCalculator(CalculatorDefinition):
                     focal_length=1e-3 * item["focal_length_mm"],
                     label=item["label"],
                     reflection=item["reflection"],
-                    transmission=item["transmission"],
                 )
             else:
                 raise ValueError(f"Unsupported element kind {item['kind']!r}.")
@@ -554,7 +525,7 @@ class CavityModeCalculator(CalculatorDefinition):
                 display_name="Left outgoing beam",
                 branch="left",
                 color="#bb3e03",
-                dash="dash",
+                dash="solid",
             )
         )
         segments.extend(
@@ -564,7 +535,7 @@ class CavityModeCalculator(CalculatorDefinition):
                 display_name="Right outgoing beam",
                 branch="right",
                 color="#bb3e03",
-                dash="dash",
+                dash="solid",
             )
         )
 
@@ -576,11 +547,7 @@ class CavityModeCalculator(CalculatorDefinition):
         return {
             "segments": segments,
             "elements": scene["elements"],
-            "waist_marker": {
-                "x_mm": 1e3 * mode.waist_position,
-                "y_um": 0.0,
-                "label": "Waist",
-            },
+            "waist_marker": None,
             "y_max_um": 1.15 * max_radius_um,
         }
 
@@ -797,9 +764,9 @@ class CavityModeCalculator(CalculatorDefinition):
     @staticmethod
     def _summary_cards(mode) -> list[dict[str, str]]:
         return [
-            {"label": "Waist radius", "value": f"{1e6 * mode.waist_radius:.3f} um"},
-            {"label": "Waist position", "value": f"{1e3 * mode.waist_position:.3f} mm"},
-            {"label": "Rayleigh range", "value": f"{1e3 * mode.rayleigh_range:.3f} mm"},
+            {"label": "Reference waist radius", "value": f"{1e6 * mode.waist_radius:.3f} um"},
+            {"label": "Reference waist position", "value": f"{1e3 * mode.waist_position:.3f} mm"},
+            {"label": "Reference Rayleigh range", "value": f"{1e3 * mode.rayleigh_range:.3f} mm"},
             {
                 "label": "Left q",
                 "value": f"{1e3 * np.real(mode.q_left):.3f} + {1e3 * np.imag(mode.q_left):.3f}i mm",
