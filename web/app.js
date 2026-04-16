@@ -21,6 +21,8 @@ const appState = {
   activeCalculatorId: null,
   selectedEntity: null,
   computeTimer: null,
+  plotTraceMeta: [],
+  currentHoverSegmentId: null,
 };
 
 const dom = {
@@ -29,14 +31,15 @@ const dom = {
   calculatorTitle: document.getElementById("calculator-title"),
   calculatorDescription: document.getElementById("calculator-description"),
   globalControls: document.getElementById("global-controls"),
-  inspectorPanel: document.getElementById("inspector-panel"),
-  inspector: document.getElementById("inspector"),
   summary: document.getElementById("summary"),
   builderPanel: document.getElementById("builder-panel"),
   builder: document.getElementById("builder"),
   builderHint: document.getElementById("builder-hint"),
-  messages: document.getElementById("messages"),
+  inspectorPanel: document.getElementById("inspector-panel"),
+  inspector: document.getElementById("inspector"),
   plot: document.getElementById("plot"),
+  plotReadout: document.getElementById("plot-readout"),
+  messages: document.getElementById("messages"),
 };
 
 
@@ -61,11 +64,6 @@ function element(tagName, options = {}) {
       if (value !== undefined && value !== null) {
         node.setAttribute(key, String(value));
       }
-    }
-  }
-  if (options.dataset) {
-    for (const [key, value] of Object.entries(options.dataset)) {
-      node.dataset[key] = value;
     }
   }
   if (options.children) {
@@ -172,7 +170,7 @@ function defaultElement(kind, state) {
 }
 
 
-function defaultGap(state, labelIndex, refractiveIndex = 1.0, distanceMm = 20.0) {
+function defaultGap(labelIndex, refractiveIndex = 1.0, distanceMm = 20.0) {
   return {
     label: `Gap ${labelIndex}`,
     refractive_index: refractiveIndex,
@@ -190,27 +188,14 @@ function renumberGapLabels(state) {
 
 function reconcileEndpoints(state) {
   const ids = (state.elements || []).map((item) => item.id);
-  if (!ids.length) {
-    state.globals.cavity_left_id = null;
-    state.globals.cavity_right_id = null;
-    return;
+  const current = Array.isArray(state.globals.endpoint_ids) ? state.globals.endpoint_ids : [];
+  const normalized = [];
+  for (const value of current) {
+    if (ids.includes(value) && !normalized.includes(value)) {
+      normalized.push(value);
+    }
   }
-  if (!ids.includes(state.globals.cavity_left_id)) {
-    state.globals.cavity_left_id = ids[0];
-  }
-  if (!ids.includes(state.globals.cavity_right_id)) {
-    state.globals.cavity_right_id = ids[ids.length - 1];
-  }
-  const leftIndex = ids.indexOf(state.globals.cavity_left_id);
-  const rightIndex = ids.indexOf(state.globals.cavity_right_id);
-  if (leftIndex === rightIndex && ids.length > 1) {
-    state.globals.cavity_right_id = ids[Math.min(ids.length - 1, leftIndex + 1)];
-  }
-  if (ids.indexOf(state.globals.cavity_left_id) > ids.indexOf(state.globals.cavity_right_id)) {
-    const previousLeft = state.globals.cavity_left_id;
-    state.globals.cavity_left_id = state.globals.cavity_right_id;
-    state.globals.cavity_right_id = previousLeft;
-  }
+  state.globals.endpoint_ids = normalized.slice(-2);
 }
 
 
@@ -221,20 +206,28 @@ function ensureValidSelection() {
     appState.selectedEntity = null;
     return;
   }
+
   if (!appState.selectedEntity) {
     return;
   }
-  const { type, index } = appState.selectedEntity;
-  if (type === "element" && index >= calculatorState.elements.length) {
+
+  if (appState.selectedEntity.type === "element" && appState.selectedEntity.index >= calculatorState.elements.length) {
     appState.selectedEntity = null;
   }
-  if (type === "gap" && index >= calculatorState.gaps.length) {
+  if (appState.selectedEntity.type === "gap" && appState.selectedEntity.index >= calculatorState.gaps.length) {
+    appState.selectedEntity = null;
+  }
+  if (
+    appState.selectedEntity.type === "environment" &&
+    !["left", "right"].includes(appState.selectedEntity.side)
+  ) {
     appState.selectedEntity = null;
   }
 }
 
 
 function commitState(nextState, { rerender = true, recompute = true } = {}) {
+  reconcileEndpoints(nextState);
   appState.states.set(appState.activeCalculatorId, nextState);
   ensureValidSelection();
   if (rerender) {
@@ -249,22 +242,55 @@ function commitState(nextState, { rerender = true, recompute = true } = {}) {
 function updateGlobalField(path, value) {
   const nextState = deepCopy(getActiveState());
   setValueByPath(nextState, path, value);
-  reconcileEndpoints(nextState);
   commitState(nextState);
 }
 
 
-function updateSelectedElementField(index, key, value) {
+function updateElementField(index, key, value) {
   const nextState = deepCopy(getActiveState());
   nextState.elements[index][key] = value;
-  reconcileEndpoints(nextState);
   commitState(nextState);
 }
 
 
-function updateSelectedGapField(index, key, value) {
+function updateGapField(index, key, value) {
   const nextState = deepCopy(getActiveState());
   nextState.gaps[index][key] = value;
+  commitState(nextState);
+}
+
+
+function updateEnvironmentField(side, key, value) {
+  const nextState = deepCopy(getActiveState());
+  const globalKey = side === "left" ? "left_environment_n" : "right_environment_n";
+  if (key === "refractive_index") {
+    nextState.globals[globalKey] = value;
+  }
+  commitState(nextState);
+}
+
+
+function toggleEndpoint(index) {
+  const nextState = deepCopy(getActiveState());
+  const element = nextState.elements[index];
+  const elementId = element ? element.id : null;
+  if (!elementId) {
+    return;
+  }
+
+  const endpoints = Array.isArray(nextState.globals.endpoint_ids)
+    ? [...nextState.globals.endpoint_ids]
+    : [];
+  const existingIndex = endpoints.indexOf(elementId);
+  if (existingIndex >= 0) {
+    endpoints.splice(existingIndex, 1);
+  } else {
+    if (endpoints.length >= 2) {
+      endpoints.shift();
+    }
+    endpoints.push(elementId);
+  }
+  nextState.globals.endpoint_ids = endpoints;
   commitState(nextState);
 }
 
@@ -278,30 +304,27 @@ function insertElementAt(zoneIndex, kind) {
     nextState.elements.push(item);
   } else if (zoneIndex === 0) {
     nextState.elements.splice(0, 0, item);
-    nextState.gaps.splice(0, 0, defaultGap(nextState, 1, nextState.globals.left_environment_n));
+    nextState.gaps.splice(0, 0, defaultGap(1, nextState.globals.left_environment_n));
   } else if (zoneIndex === elementCount) {
     nextState.elements.push(item);
-    nextState.gaps.push(defaultGap(nextState, nextState.gaps.length + 1, nextState.globals.right_environment_n));
+    nextState.gaps.push(defaultGap(nextState.gaps.length + 1, nextState.globals.right_environment_n));
   } else {
-    const oldGap = nextState.gaps[zoneIndex - 1] || defaultGap(nextState, zoneIndex);
-    const firstDistance = Math.max(0.1, oldGap.distance_mm / 2);
-    const secondDistance = Math.max(0.1, oldGap.distance_mm - firstDistance);
-    const leftGap = {
+    const oldGap = nextState.gaps[zoneIndex - 1] || defaultGap(zoneIndex);
+    const firstDistance = Math.max(0.1, Number(oldGap.distance_mm) / 2);
+    const secondDistance = Math.max(0.1, Number(oldGap.distance_mm) - firstDistance);
+    nextState.elements.splice(zoneIndex, 0, item);
+    nextState.gaps.splice(zoneIndex - 1, 1, {
       label: oldGap.label,
       refractive_index: oldGap.refractive_index,
       distance_mm: firstDistance,
-    };
-    const rightGap = {
+    }, {
       label: oldGap.label,
       refractive_index: oldGap.refractive_index,
       distance_mm: secondDistance,
-    };
-    nextState.elements.splice(zoneIndex, 0, item);
-    nextState.gaps.splice(zoneIndex - 1, 1, leftGap, rightGap);
+    });
   }
 
   renumberGapLabels(nextState);
-  reconcileEndpoints(nextState);
   appState.selectedEntity = { type: "element", index: zoneIndex };
   commitState(nextState);
 }
@@ -324,13 +347,31 @@ function moveElement(sourceIndex, zoneIndex) {
     targetIndex -= 1;
   }
   nextState.elements.splice(targetIndex, 0, item);
-  reconcileEndpoints(nextState);
   appState.selectedEntity = { type: "element", index: targetIndex };
   commitState(nextState);
 }
 
 
-function deleteSelectedElement(index) {
+function swapElements(sourceIndex, targetIndex) {
+  const nextState = deepCopy(getActiveState());
+  if (
+    sourceIndex < 0 ||
+    sourceIndex >= nextState.elements.length ||
+    targetIndex < 0 ||
+    targetIndex >= nextState.elements.length ||
+    sourceIndex === targetIndex
+  ) {
+    return;
+  }
+  const temp = nextState.elements[sourceIndex];
+  nextState.elements[sourceIndex] = nextState.elements[targetIndex];
+  nextState.elements[targetIndex] = temp;
+  appState.selectedEntity = { type: "element", index: targetIndex };
+  commitState(nextState);
+}
+
+
+function deleteElement(index) {
   const nextState = deepCopy(getActiveState());
   if (index < 0 || index >= nextState.elements.length) {
     return;
@@ -357,7 +398,6 @@ function deleteSelectedElement(index) {
   }
 
   renumberGapLabels(nextState);
-  reconcileEndpoints(nextState);
   appState.selectedEntity = null;
   commitState(nextState);
 }
@@ -461,7 +501,7 @@ async function initializeApplication() {
       appState.schemas.set(calculator.id, schema);
       appState.states.set(calculator.id, deepCopy(schema.default_state));
     }
-    appState.activeCalculatorId = appState.calculators[0]?.id || null;
+    appState.activeCalculatorId = appState.calculators.length ? appState.calculators[0].id : null;
     renderApp();
     await recomputeActiveCalculator();
   } catch (error) {
@@ -499,8 +539,8 @@ async function recomputeActiveCalculator() {
       error: error.message,
       warnings: [],
       summary_cards: [],
-      plot: { traces: [], elements: [], waist_marker: null, y_max_um: 200 },
-      scene: { elements: [], gaps: [], total_length_mm: 0 },
+      plot: { traces: [], segments: [], elements: [], waist_marker: null, y_max_um: 200 },
+      scene: { elements: [], gaps: [], environments: [], total_length_mm: 0 },
     });
     renderApp();
     setStatus("Runtime error", "error");
@@ -521,6 +561,7 @@ function renderTabs() {
       }
       appState.activeCalculatorId = calculator.id;
       appState.selectedEntity = null;
+      appState.currentHoverSegmentId = null;
       renderApp();
       if (!appState.results.has(calculator.id)) {
         await recomputeActiveCalculator();
@@ -566,13 +607,19 @@ function renderField(field, value, onChange, calculatorState) {
       },
     });
     const syncValue = (rawValue) => {
-      const nextValue = field.step >= 1 ? Number(rawValue) : Number(rawValue);
+      const nextValue = Number(rawValue);
       rangeInput.value = String(nextValue);
       numberInput.value = String(nextValue);
       onChange(nextValue);
     };
     rangeInput.addEventListener("input", () => syncValue(rangeInput.value));
-    numberInput.addEventListener("input", () => syncValue(numberInput.value));
+    numberInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        numberInput.blur();
+      }
+    });
+    numberInput.addEventListener("change", () => syncValue(numberInput.value));
+    numberInput.addEventListener("blur", () => syncValue(numberInput.value));
     row.append(rangeInput, numberInput);
     wrapper.append(row);
     return wrapper;
@@ -586,7 +633,13 @@ function renderField(field, value, onChange, calculatorState) {
         value,
       },
     });
-    input.addEventListener("input", () => onChange(Number(input.value)));
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        input.blur();
+      }
+    });
+    input.addEventListener("change", () => onChange(Number(input.value)));
+    input.addEventListener("blur", () => onChange(Number(input.value)));
     wrapper.append(input);
     return wrapper;
   }
@@ -598,7 +651,13 @@ function renderField(field, value, onChange, calculatorState) {
         value: value || "",
       },
     });
-    input.addEventListener("input", () => onChange(input.value));
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        input.blur();
+      }
+    });
+    input.addEventListener("change", () => onChange(input.value));
+    input.addEventListener("blur", () => onChange(input.value));
     wrapper.append(input);
     return wrapper;
   }
@@ -629,9 +688,12 @@ function renderGlobalControls() {
   const schema = getActiveSchema();
   const calculatorState = getActiveState();
   const nodes = (schema.global_fields || []).map((field) =>
-    renderField(field, getValueByPath(calculatorState, field.path), (nextValue) => {
-      updateGlobalField(field.path, nextValue);
-    }, calculatorState)
+    renderField(
+      field,
+      getValueByPath(calculatorState, field.path),
+      (nextValue) => updateGlobalField(field.path, nextValue),
+      calculatorState,
+    )
   );
   dom.globalControls.replaceChildren(...nodes);
 }
@@ -640,12 +702,15 @@ function renderGlobalControls() {
 function renderSummary() {
   const result = getActiveResult();
   if (!result || !(result.summary_cards || []).length) {
-    dom.summary.replaceChildren(element("p", {
-      className: "empty-state",
-      text: "Run a calculator to populate summary values.",
-    }));
+    dom.summary.replaceChildren(
+      element("p", {
+        className: "empty-state",
+        text: "Run a calculator to populate summary values.",
+      }),
+    );
     return;
   }
+
   const cards = result.summary_cards.map((card) =>
     element("div", {
       className: "summary-card",
@@ -668,11 +733,14 @@ function renderInspector() {
   }
 
   dom.inspectorPanel.style.display = "";
+
   if (!appState.selectedEntity) {
-    dom.inspector.replaceChildren(element("p", {
-      className: "empty-state",
-      text: "Select an element or a gap on the axis to edit its properties.",
-    }));
+    dom.inspector.replaceChildren(
+      element("p", {
+        className: "empty-state",
+        text: "Click an element, a gap, or an environment card to edit its parameters.",
+      }),
+    );
     return;
   }
 
@@ -680,35 +748,25 @@ function renderInspector() {
     const index = appState.selectedEntity.index;
     const item = calculatorState.elements[index];
     const fields = schema.element_forms[item.kind] || [];
-    const header = element("div", {
-      children: [
-        element("p", { className: "summary-label", text: item.kind.replaceAll("_", " ") }),
-        element("h3", { text: item.label }),
-      ],
-    });
-    const deleteButton = element("button", {
-      className: "delete-button",
-      text: "Delete Element",
-      attrs: { type: "button" },
-    });
-    deleteButton.addEventListener("click", () => deleteSelectedElement(index));
-    const fieldNodes = fields.map((field) =>
-      renderField(field, item[field.key], (nextValue) => {
-        updateSelectedElementField(index, field.key, nextValue);
-      }, calculatorState)
+    dom.inspector.replaceChildren(
+      element("div", {
+        children: [
+          element("p", { className: "summary-label", text: item.kind.replaceAll("_", " ") }),
+          element("h3", { text: item.label }),
+        ],
+      }),
+      ...fields.map((field) =>
+        renderField(field, item[field.key], (nextValue) => {
+          updateElementField(index, field.key, nextValue);
+        }, calculatorState)
+      ),
     );
-    dom.inspector.replaceChildren(header, ...fieldNodes, deleteButton);
     return;
   }
 
   if (appState.selectedEntity.type === "gap") {
     const index = appState.selectedEntity.index;
     const item = calculatorState.gaps[index];
-    const gapNodes = schema.gap_fields.map((field) =>
-      renderField(field, item[field.key], (nextValue) => {
-        updateSelectedGapField(index, field.key, nextValue);
-      }, calculatorState)
-    );
     dom.inspector.replaceChildren(
       element("div", {
         children: [
@@ -716,13 +774,39 @@ function renderInspector() {
           element("h3", { text: item.label }),
         ],
       }),
-      ...gapNodes,
+      ...schema.gap_fields.map((field) =>
+        renderField(field, item[field.key], (nextValue) => {
+          updateGapField(index, field.key, nextValue);
+        }, calculatorState)
+      ),
+    );
+    return;
+  }
+
+  if (appState.selectedEntity.type === "environment") {
+    const side = appState.selectedEntity.side;
+    const label = side === "left" ? "Left environment" : "Right environment";
+    const value = side === "left"
+      ? calculatorState.globals.left_environment_n
+      : calculatorState.globals.right_environment_n;
+    dom.inspector.replaceChildren(
+      element("div", {
+        children: [
+          element("p", { className: "summary-label", text: "environment" }),
+          element("h3", { text: label }),
+        ],
+      }),
+      ...schema.environment_fields.map((field) =>
+        renderField(field, value, (nextValue) => {
+          updateEnvironmentField(side, field.key, nextValue);
+        }, calculatorState)
+      ),
     );
   }
 }
 
 
-function attachDropHandlers(node, zoneIndex) {
+function attachZoneDropHandlers(node, zoneIndex) {
   node.addEventListener("dragover", (event) => {
     event.preventDefault();
     node.classList.add("active");
@@ -748,15 +832,186 @@ function attachDropHandlers(node, zoneIndex) {
 }
 
 
-function createDropZone(zoneIndex, isEdge, calculatorState, labelText) {
-  const zone = element("div", {
-    className: "drop-zone",
+function attachElementSwapHandlers(node, index) {
+  node.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    node.classList.add("active");
+  });
+  node.addEventListener("dragleave", () => {
+    node.classList.remove("active");
+  });
+  node.addEventListener("drop", (event) => {
+    event.preventDefault();
+    node.classList.remove("active");
+    const payload = event.dataTransfer.getData("text/plain");
+    if (!payload) {
+      return;
+    }
+    const data = JSON.parse(payload);
+    if (data.source === "element") {
+      swapElements(data.index, index);
+    }
+    if (data.source === "palette") {
+      insertElementAt(index, data.kind);
+    }
+  });
+}
+
+
+function createEnvironmentCard(side, calculatorState) {
+  const selected = appState.selectedEntity
+    && appState.selectedEntity.type === "environment"
+    && appState.selectedEntity.side === side;
+  const refractiveIndex = side === "left"
+    ? calculatorState.globals.left_environment_n
+    : calculatorState.globals.right_environment_n;
+  const node = element("div", {
+    className: `environment-card gap-card${selected ? " selected" : ""}`,
     children: [
-      element("div", { className: "edge-label", text: labelText || (isEdge ? "Drop here" : "Insert") }),
+      element("div", { className: "gap-pill", text: `n = ${formatNumber(refractiveIndex, 3)}` }),
+      element("div", {
+        className: "gap-core",
+        children: [element("div", { className: "edge-label", text: side === "left" ? "Left boundary" : "Right boundary" })],
+      }),
+      element("div", { className: "gap-pill", text: side === "left" ? "Insert at start" : "Insert at end" }),
     ],
   });
-  attachDropHandlers(zone, zoneIndex);
-  return zone;
+  node.addEventListener("click", () => {
+    appState.selectedEntity = { type: "environment", side };
+    renderApp();
+  });
+  attachZoneDropHandlers(node, side === "left" ? 0 : calculatorState.elements.length);
+  return node;
+}
+
+
+function createGapCard(gap, index) {
+  const selected = appState.selectedEntity
+    && appState.selectedEntity.type === "gap"
+    && appState.selectedEntity.index === index;
+  const node = element("div", {
+    className: `gap-card${selected ? " selected" : ""}`,
+    children: [
+      element("div", { className: "gap-pill", text: `n = ${formatNumber(gap.refractive_index, 3)}` }),
+      element("div", {
+        className: "gap-core",
+        children: [element("div", { className: "edge-label", text: gap.label })],
+      }),
+      element("div", { className: "gap-pill", text: `${formatNumber(gap.distance_mm, 2)} mm` }),
+    ],
+  });
+  node.addEventListener("click", () => {
+    appState.selectedEntity = { type: "gap", index };
+    renderApp();
+  });
+  attachZoneDropHandlers(node, index + 1);
+  return node;
+}
+
+
+function createElementCard(item, index, calculatorState) {
+  const selected = appState.selectedEntity
+    && appState.selectedEntity.type === "element"
+    && appState.selectedEntity.index === index;
+  const endpoints = calculatorState.globals.endpoint_ids || [];
+
+  const titleInput = element("input", {
+    className: "element-title-input",
+    attrs: { type: "text", value: item.label, draggable: "false" },
+  });
+  titleInput.addEventListener("click", (event) => {
+    event.stopPropagation();
+    appState.selectedEntity = { type: "element", index };
+  });
+  titleInput.addEventListener("pointerdown", (event) => event.stopPropagation());
+  titleInput.addEventListener("dragstart", (event) => event.preventDefault());
+  titleInput.addEventListener("focus", () => {
+    appState.selectedEntity = { type: "element", index };
+  });
+  titleInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      titleInput.blur();
+    }
+  });
+  titleInput.addEventListener("change", () => {
+    const nextLabel = titleInput.value.trim() || item.label;
+    updateElementField(index, "label", nextLabel);
+  });
+  titleInput.addEventListener("blur", () => {
+    const nextLabel = titleInput.value.trim() || item.label;
+    if (nextLabel !== item.label) {
+      updateElementField(index, "label", nextLabel);
+    } else {
+      titleInput.value = item.label;
+    }
+  });
+
+  const deleteButton = element("button", {
+    className: "icon-button",
+    text: "x",
+    attrs: { type: "button", title: "Delete element" },
+  });
+  deleteButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    deleteElement(index);
+  });
+  deleteButton.addEventListener("dragstart", (event) => event.preventDefault());
+
+  const endpointButton = element("button", {
+    className: `endpoint-button${endpoints.includes(item.id) ? " active" : ""}`,
+    text: endpoints.includes(item.id) ? "Unset endpoint" : "Set endpoint",
+    attrs: { type: "button" },
+  });
+  endpointButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleEndpoint(index);
+  });
+  endpointButton.addEventListener("dragstart", (event) => event.preventDefault());
+
+  const node = element("div", {
+    className: `element-card${selected ? " selected" : ""}`,
+    attrs: { draggable: "true" },
+    children: [
+      element("div", {
+        className: "element-header",
+        children: [titleInput, deleteButton],
+      }),
+      element("div", { className: "element-kind", text: item.kind.replaceAll("_", " ") }),
+      element("div", {
+        className: "badge-row",
+        children: endpoints.includes(item.id)
+          ? [element("span", { className: "badge endpoint", text: "Endpoint" })]
+          : [],
+      }),
+      element("div", {
+        className: "element-props",
+        children: summarizeElement(item).map((line) => element("div", { text: line })),
+      }),
+      element("div", {
+        className: "element-footer",
+        children: [endpointButton],
+      }),
+    ],
+  });
+
+  node.addEventListener("click", () => {
+    appState.selectedEntity = { type: "element", index };
+    renderApp();
+  });
+
+  node.addEventListener("dragstart", (event) => {
+    node.classList.add("dragging");
+    event.dataTransfer.setData("text/plain", JSON.stringify({
+      source: "element",
+      index,
+    }));
+  });
+  node.addEventListener("dragend", () => {
+    node.classList.remove("dragging");
+  });
+
+  attachElementSwapHandlers(node, index);
+  return node;
 }
 
 
@@ -767,6 +1022,7 @@ function renderAxisBuilder() {
     dom.builderPanel.style.display = "none";
     return;
   }
+
   dom.builderPanel.style.display = "";
 
   const paletteNodes = (schema.palette || []).map((item) => {
@@ -789,97 +1045,36 @@ function renderAxisBuilder() {
     children: paletteNodes,
   });
 
+  const axisShell = element("div", { className: "axis-shell" });
   const track = element("div", { className: "axis-track" });
-  const elements = calculatorState.elements || [];
-  const gaps = calculatorState.gaps || [];
 
-  if (!elements.length) {
-    track.append(createDropZone(0, true, calculatorState, "Drag a component here"));
+  if (!calculatorState.elements.length) {
+    const emptyDrop = element("div", {
+      className: "empty-drop-target",
+      children: [
+        element("div", {
+          html: "<strong>Drag a component here</strong><br>Start by dropping a surface or lens onto the optical axis.",
+        }),
+      ],
+    });
+    attachZoneDropHandlers(emptyDrop, 0);
+    track.append(emptyDrop);
   } else {
-    track.append(createDropZone(0, true, calculatorState, `Left n = ${formatNumber(calculatorState.globals.left_environment_n, 3)}`));
-    elements.forEach((item, index) => {
-      const card = element("div", {
-        className: `element-card${appState.selectedEntity?.type === "element" && appState.selectedEntity.index === index ? " selected" : ""}`,
-        attrs: { draggable: "true" },
-        children: [
-          element("div", { className: "element-label", text: item.label }),
-          element("div", { className: "element-kind", text: item.kind.replaceAll("_", " ") }),
-          element("div", {
-            className: "badge-row",
-            children: [
-              ...(item.id === calculatorState.globals.cavity_left_id
-                ? [element("span", { className: "badge endpoint", text: "Left endpoint" })]
-                : []),
-              ...(item.id === calculatorState.globals.cavity_right_id
-                ? [element("span", { className: "badge endpoint", text: "Right endpoint" })]
-                : []),
-            ],
-          }),
-          element("div", {
-            className: "element-props",
-            children: summarizeElement(item).map((line) => element("div", { text: line })),
-          }),
-        ],
-      });
-
-      card.addEventListener("click", () => {
-        appState.selectedEntity = { type: "element", index };
-        renderApp();
-      });
-
-      card.addEventListener("dragstart", (event) => {
-        card.classList.add("dragging");
-        event.dataTransfer.setData("text/plain", JSON.stringify({
-          source: "element",
-          index,
-        }));
-      });
-      card.addEventListener("dragend", () => {
-        card.classList.remove("dragging");
-      });
-
-      track.append(card);
-
-      if (index < elements.length - 1) {
-        const gap = gaps[index];
-        const gapCard = element("div", {
-          className: `gap-card${appState.selectedEntity?.type === "gap" && appState.selectedEntity.index === index ? " selected" : ""}`,
-          children: [
-            element("div", { className: "gap-pill", text: `n = ${formatNumber(gap.refractive_index, 3)}` }),
-            element("div", {
-              className: "gap-core",
-              children: [element("div", { className: "edge-label", text: gap.label })],
-            }),
-            element("div", { className: "gap-pill", text: `${formatNumber(gap.distance_mm, 2)} mm` }),
-          ],
-        });
-        gapCard.addEventListener("click", () => {
-          appState.selectedEntity = { type: "gap", index };
-          renderApp();
-        });
-        attachDropHandlers(gapCard, index + 1);
-        track.append(gapCard);
-      } else {
-        track.append(createDropZone(
-          elements.length,
-          true,
-          calculatorState,
-          `Right n = ${formatNumber(calculatorState.globals.right_environment_n, 3)}`,
-        ));
+    track.append(createEnvironmentCard("left", calculatorState));
+    calculatorState.elements.forEach((item, index) => {
+      track.append(createElementCard(item, index, calculatorState));
+      if (index < calculatorState.gaps.length) {
+        track.append(createGapCard(calculatorState.gaps[index], index));
       }
     });
+    track.append(createEnvironmentCard("right", calculatorState));
   }
 
+  axisShell.append(track);
   dom.builder.replaceChildren(
     element("div", {
       className: "builder-layout",
-      children: [
-        palette,
-        element("div", {
-          className: "axis-shell",
-          children: [track],
-        }),
-      ],
+      children: [palette, axisShell],
     })
   );
 }
@@ -903,7 +1098,6 @@ function summarizeElement(item) {
 function renderMessages() {
   const result = getActiveResult();
   const messages = [];
-
   if (!result) {
     messages.push(element("div", {
       className: "message info",
@@ -925,11 +1119,10 @@ function renderMessages() {
     if (result.ok) {
       messages.push(element("div", {
         className: "message info",
-        text: "Hover the mode envelope to read local spot size, waist radius, and waist position.",
+        text: "Hover a beam segment to inspect the current cross-section, see the active segment waist, and compare outgoing beams.",
       }));
     }
   }
-
   if (!messages.length) {
     messages.push(element("div", {
       className: "message info",
@@ -940,12 +1133,25 @@ function renderMessages() {
 }
 
 
+function linspace(start, stop, count) {
+  if (count <= 1) {
+    return [start];
+  }
+  const values = [];
+  const step = (stop - start) / (count - 1);
+  for (let index = 0; index < count; index += 1) {
+    values.push(start + step * index);
+  }
+  return values;
+}
+
+
 function buildElementPlotTraces(plot, yMax) {
   const traces = [];
   const annotations = [];
   for (const item of plot.elements || []) {
     const topY = 0.93 * yMax;
-    const labelY = 1.03 * yMax;
+    const labelY = 1.02 * yMax;
     if (item.kind === "plane_surface") {
       const y = linspace(-topY, topY, 2);
       const x = y.map(() => item.position_mm);
@@ -997,50 +1203,251 @@ function buildElementPlotTraces(plot, yMax) {
 }
 
 
-function linspace(start, stop, count) {
-  if (count <= 1) {
-    return [start];
-  }
+function collectXCoordinates(plot) {
   const values = [];
-  const step = (stop - start) / (count - 1);
-  for (let index = 0; index < count; index += 1) {
-    values.push(start + step * index);
+  for (const segment of plot.segments || []) {
+    values.push(...segment.x_mm);
   }
-  return values;
+  for (const trace of plot.traces || []) {
+    values.push(...trace.x_mm);
+  }
+  for (const item of plot.elements || []) {
+    values.push(item.position_mm);
+  }
+  if (plot.waist_marker) {
+    values.push(plot.waist_marker.x_mm);
+  }
+  return values.length ? values : [0];
+}
+
+
+function defaultPlotReadout(plot, result) {
+  if (plot.segments && plot.segments.length) {
+    return {
+      title: "Hover a segment",
+      body: "Move over the beam envelope to lock a vertical cursor to the local x position and inspect the active segment waist, waist position, and spot size.",
+    };
+  }
+  if (result && result.error) {
+    return {
+      title: "Waiting for a valid cavity",
+      body: result.error,
+    };
+  }
+  return {
+    title: "Hover the plot",
+    body: "Move over the plotted beam envelope to inspect the current cross-section.",
+  };
+}
+
+
+function setPlotReadout(content) {
+  dom.plotReadout.replaceChildren(
+    element("p", { className: "plot-readout-title", text: content.title }),
+    element("p", { className: "plot-readout-body", html: content.body }),
+  );
+}
+
+
+function interpolateSegmentSpot(segment, xValue) {
+  const x = segment.x_mm;
+  const y = segment.y_um;
+  if (!x.length) {
+    return 0;
+  }
+
+  for (let index = 1; index < x.length; index += 1) {
+    const left = x[index - 1];
+    const right = x[index];
+    if ((left <= xValue && xValue <= right) || (right <= xValue && xValue <= left)) {
+      if (left === right) {
+        return y[index];
+      }
+      const fraction = (xValue - left) / (right - left);
+      return y[index - 1] + fraction * (y[index] - y[index - 1]);
+    }
+  }
+
+  let bestIndex = 0;
+  let bestDistance = Math.abs(x[0] - xValue);
+  for (let index = 1; index < x.length; index += 1) {
+    const distance = Math.abs(x[index] - xValue);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  }
+  return y[bestIndex];
+}
+
+
+function buildHoverReadout(segment, xValue) {
+  const spotSizeUm = interpolateSegmentSpot(segment, xValue);
+  return {
+    title: `${segment.name} · ${segment.segment_label}`,
+    body:
+      `x = <strong>${formatNumber(xValue, 3)} mm</strong><br>` +
+      `spot size = <strong>${formatNumber(spotSizeUm, 3)} um</strong><br>` +
+      `segment waist = <strong>${formatNumber(segment.waist_radius_um, 3)} um</strong><br>` +
+      `waist position = <strong>${formatNumber(segment.waist_position_mm, 3)} mm</strong><br>` +
+      `Rayleigh range = <strong>${formatNumber(segment.rayleigh_range_mm, 3)} mm</strong><br>` +
+      `n = <strong>${formatNumber(segment.refractive_index, 4)}</strong>`,
+  };
+}
+
+
+function buildBaseShapes(plot, yMax) {
+  return [
+    {
+      type: "line",
+      x0: Math.min(...collectXCoordinates(plot), -10),
+      x1: Math.max(...collectXCoordinates(plot), 10),
+      y0: 0,
+      y1: 0,
+      line: { color: "rgba(36, 31, 23, 0.12)", width: 1 },
+    },
+  ];
+}
+
+
+function setBeamTraceOpacity(segmentId) {
+  if (!appState.plotTraceMeta.length) {
+    return;
+  }
+  const opacities = appState.plotTraceMeta.map((meta) => {
+    if (meta.kind !== "beam") {
+      return 1;
+    }
+    return meta.segmentId === segmentId ? 1 : 0.16;
+  });
+  Plotly.restyle(dom.plot, "opacity", opacities);
+}
+
+
+function resetBeamTraceOpacity() {
+  if (!appState.plotTraceMeta.length) {
+    return;
+  }
+  const opacities = appState.plotTraceMeta.map(() => 1);
+  Plotly.restyle(dom.plot, "opacity", opacities);
+}
+
+
+function applyPlotHover(plot, xValue, segmentId) {
+  if (!(plot.segments && plot.segments.length)) {
+    return;
+  }
+  const segment = plot.segments.find((item) => item.id === segmentId);
+  if (!segment) {
+    return;
+  }
+
+  appState.currentHoverSegmentId = segmentId;
+  setBeamTraceOpacity(segmentId);
+  setPlotReadout(buildHoverReadout(segment, xValue));
+  Plotly.relayout(dom.plot, {
+    shapes: [
+      ...buildBaseShapes(plot, plot.y_max_um),
+      {
+        type: "line",
+        x0: xValue,
+        x1: xValue,
+        y0: -1.18 * plot.y_max_um,
+        y1: 1.18 * plot.y_max_um,
+        line: { color: "rgba(11, 114, 133, 0.65)", width: 2, dash: "dot" },
+      },
+    ],
+  });
+}
+
+
+function clearPlotHover(plot, result) {
+  appState.currentHoverSegmentId = null;
+  resetBeamTraceOpacity();
+  setPlotReadout(defaultPlotReadout(plot, result));
+  Plotly.relayout(dom.plot, {
+    shapes: buildBaseShapes(plot, plot.y_max_um),
+  });
 }
 
 
 function renderPlot() {
+  const schema = getActiveSchema();
   const result = getActiveResult();
-  const traces = [];
-  const plot = result?.plot || { traces: [], elements: [], waist_marker: null, y_max_um: 200 };
+  const plot = (result && result.plot) || { traces: [], segments: [], elements: [], waist_marker: null, y_max_um: 200 };
   const yMax = plot.y_max_um || 200;
+  const traces = [];
+  const traceMeta = [];
 
-  for (const trace of plot.traces || []) {
-    traces.push({
-      x: trace.x_mm,
-      y: trace.y_um,
-      type: "scatter",
-      mode: "lines",
-      name: trace.name,
-      text: trace.hover_text,
-      hovertemplate: "%{text}<extra></extra>",
-      line: { color: trace.color, width: 4, dash: trace.dash || "solid" },
-    });
-    traces.push({
-      x: trace.x_mm,
-      y: trace.y_um.map((value) => -value),
-      type: "scatter",
-      mode: "lines",
-      showlegend: false,
-      text: trace.hover_text,
-      hovertemplate: "%{text}<extra></extra>",
-      line: { color: trace.color, width: 4, dash: trace.dash || "solid" },
-    });
+  if (plot.segments && plot.segments.length) {
+    const legendSeen = new Set();
+    for (const segment of plot.segments) {
+      const showLegend = !legendSeen.has(segment.branch);
+      legendSeen.add(segment.branch);
+      traces.push({
+        x: segment.x_mm,
+        y: segment.y_um,
+        type: "scatter",
+        mode: "lines",
+        name: segment.name,
+        text: segment.hover_text,
+        hovertemplate: "%{text}<extra></extra>",
+        customdata: segment.x_mm.map(() => segment.id),
+        line: { color: segment.color, width: 4, dash: segment.dash || "solid" },
+        showlegend: showLegend,
+        legendgroup: segment.branch,
+        opacity: 1,
+      });
+      traceMeta.push({ kind: "beam", segmentId: segment.id });
+      traces.push({
+        x: segment.x_mm,
+        y: segment.y_um.map((value) => -value),
+        type: "scatter",
+        mode: "lines",
+        text: segment.hover_text,
+        hovertemplate: "%{text}<extra></extra>",
+        customdata: segment.x_mm.map(() => segment.id),
+        line: { color: segment.color, width: 4, dash: segment.dash || "solid" },
+        showlegend: false,
+        legendgroup: segment.branch,
+        opacity: 1,
+      });
+      traceMeta.push({ kind: "beam", segmentId: segment.id });
+    }
+  } else {
+    for (const trace of plot.traces || []) {
+      traces.push({
+        x: trace.x_mm,
+        y: trace.y_um,
+        type: "scatter",
+        mode: "lines",
+        name: trace.name,
+        text: trace.hover_text,
+        hovertemplate: "%{text}<extra></extra>",
+        line: { color: trace.color, width: 4, dash: trace.dash || "solid" },
+        opacity: 1,
+      });
+      traceMeta.push({ kind: "beam", segmentId: null });
+      traces.push({
+        x: trace.x_mm,
+        y: trace.y_um.map((value) => -value),
+        type: "scatter",
+        mode: "lines",
+        showlegend: false,
+        text: trace.hover_text,
+        hovertemplate: "%{text}<extra></extra>",
+        line: { color: trace.color, width: 4, dash: trace.dash || "solid" },
+        opacity: 1,
+      });
+      traceMeta.push({ kind: "beam", segmentId: null });
+    }
   }
 
   const elementPlot = buildElementPlotTraces(plot, yMax);
-  traces.push(...elementPlot.traces);
+  for (const trace of elementPlot.traces) {
+    traces.push(trace);
+    traceMeta.push({ kind: "decoration", segmentId: null });
+  }
 
   if (plot.waist_marker) {
     traces.push({
@@ -1050,18 +1457,16 @@ function renderPlot() {
       mode: "markers+text",
       text: [plot.waist_marker.label],
       textposition: "top center",
-      marker: {
-        color: "#000000",
-        size: 11,
-      },
+      marker: { color: "#000000", size: 11 },
       hovertemplate: "Waist<br>x = %{x:.3f} mm<extra></extra>",
       name: "Waist",
     });
+    traceMeta.push({ kind: "decoration", segmentId: null });
   }
 
   const layout = {
     title: {
-      text: getActiveSchema()?.title || "Calculator",
+      text: (schema && schema.title) || "Calculator",
       font: { family: "Space Grotesk, sans-serif", size: 24, color: "#241f17" },
     },
     paper_bgcolor: "rgba(0,0,0,0)",
@@ -1079,6 +1484,7 @@ function renderPlot() {
       gridcolor: "rgba(36, 31, 23, 0.1)",
     },
     hovermode: "closest",
+    hoverdistance: 30,
     legend: {
       orientation: "h",
       x: 1,
@@ -1086,45 +1492,43 @@ function renderPlot() {
       y: 1.12,
     },
     annotations: elementPlot.annotations,
-    shapes: [
-      {
-        type: "line",
-        x0: Math.min(...collectXCoordinates(plot), -10),
-        x1: Math.max(...collectXCoordinates(plot), 10),
-        y0: 0,
-        y1: 0,
-        line: { color: "rgba(36, 31, 23, 0.12)", width: 1 },
-      },
-    ],
+    shapes: buildBaseShapes(plot, yMax),
   };
 
+  appState.plotTraceMeta = traceMeta;
   Plotly.react(dom.plot, traces, layout, {
     responsive: true,
     displaylogo: false,
     modeBarButtonsToRemove: ["lasso2d", "select2d"],
   });
-}
 
+  if (typeof dom.plot.removeAllListeners === "function") {
+    dom.plot.removeAllListeners("plotly_hover");
+    dom.plot.removeAllListeners("plotly_unhover");
+  }
 
-function collectXCoordinates(plot) {
-  const values = [];
-  for (const trace of plot.traces || []) {
-    values.push(...trace.x_mm);
-  }
-  for (const item of plot.elements || []) {
-    values.push(item.position_mm);
-  }
-  if (plot.waist_marker) {
-    values.push(plot.waist_marker.x_mm);
-  }
-  return values.length ? values : [0];
+  dom.plot.on("plotly_hover", (event) => {
+    if (!(plot.segments && plot.segments.length) || !(event.points && event.points.length)) {
+      return;
+    }
+    const point = event.points[0];
+    applyPlotHover(plot, point.x, point.customdata);
+  });
+
+  dom.plot.on("plotly_unhover", () => {
+    if (!(plot.segments && plot.segments.length)) {
+      return;
+    }
+    clearPlotHover(plot, result);
+  });
+
+  setPlotReadout(defaultPlotReadout(plot, result));
 }
 
 
 function renderApp() {
   const schema = getActiveSchema();
   const calculator = appState.calculators.find((item) => item.id === appState.activeCalculatorId);
-
   renderTabs();
 
   if (!schema || !calculator) {
@@ -1135,15 +1539,15 @@ function renderApp() {
   dom.calculatorDescription.textContent = calculator.description;
   dom.builderHint.textContent =
     schema.layout === "optical_axis"
-      ? "Drag components onto the axis, drag existing components onto any slot to reorder them, and click the gaps to edit spacing and medium."
+      ? "Drag components onto the axis, drop onto other elements to swap them, click titles to rename, toggle endpoints on cards, and click cards or gaps to edit parameters."
       : "Adjust the control values to run the selected calculator in the browser-side Python runtime.";
 
   renderGlobalControls();
-  renderInspector();
   renderSummary();
   renderAxisBuilder();
-  renderMessages();
+  renderInspector();
   renderPlot();
+  renderMessages();
 }
 
 

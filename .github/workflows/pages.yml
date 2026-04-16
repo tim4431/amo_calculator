@@ -60,7 +60,7 @@ jobs:
           cavity_schema = get_calculator_schema("cavity-mode")
           cavity_result = run_calculator("cavity-mode", cavity_schema["default_state"])
           assert cavity_result["ok"], cavity_result
-          assert cavity_result["plot"]["traces"], cavity_result["plot"]
+          assert cavity_result["plot"]["segments"], cavity_result["plot"]
 
           beam_schema = get_calculator_schema("gaussian-beam")
           beam_result = run_calculator("gaussian-beam", beam_schema["default_state"])
@@ -79,7 +79,6 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: _site
-          include-hidden-files: true
 
   deploy:
     if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch

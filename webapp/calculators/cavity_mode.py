@@ -19,8 +19,7 @@ _DEFAULT_STATE: dict[str, Any] = {
         "output_length_mm": 40.0,
         "left_environment_n": 1.0,
         "right_environment_n": 1.0,
-        "cavity_left_id": "m1",
-        "cavity_right_id": "m2",
+        "endpoint_ids": ["m1", "m2"],
     },
     "elements": [
         {
@@ -120,40 +119,9 @@ class CavityModeCalculator(CalculatorDefinition):
                     "step": 1.0,
                     "unit": "mm",
                 },
-                {
-                    "path": "globals.left_environment_n",
-                    "label": "Left environment n",
-                    "type": "range_number",
-                    "min": 1.0,
-                    "max": 3.0,
-                    "step": 0.001,
-                    "unit": "",
-                },
-                {
-                    "path": "globals.right_environment_n",
-                    "label": "Right environment n",
-                    "type": "range_number",
-                    "min": 1.0,
-                    "max": 3.0,
-                    "step": 0.001,
-                    "unit": "",
-                },
-                {
-                    "path": "globals.cavity_left_id",
-                    "label": "Left cavity endpoint",
-                    "type": "select",
-                    "options_source": "elements",
-                },
-                {
-                    "path": "globals.cavity_right_id",
-                    "label": "Right cavity endpoint",
-                    "type": "select",
-                    "options_source": "elements",
-                },
             ],
             "element_forms": {
                 "curved_surface": [
-                    {"key": "label", "label": "Label", "type": "text"},
                     {
                         "key": "radius_mm",
                         "label": "Radius of curvature",
@@ -181,7 +149,6 @@ class CavityModeCalculator(CalculatorDefinition):
                     },
                 ],
                 "plane_surface": [
-                    {"key": "label", "label": "Label", "type": "text"},
                     {
                         "key": "reflection",
                         "label": "Reflection",
@@ -202,7 +169,6 @@ class CavityModeCalculator(CalculatorDefinition):
                     },
                 ],
                 "lens": [
-                    {"key": "label", "label": "Label", "type": "text"},
                     {
                         "key": "focal_length_mm",
                         "label": "Focal length",
@@ -251,6 +217,17 @@ class CavityModeCalculator(CalculatorDefinition):
                     "unit": "mm",
                 },
             ],
+            "environment_fields": [
+                {
+                    "key": "refractive_index",
+                    "label": "Refractive index",
+                    "type": "range_number",
+                    "min": 1.0,
+                    "max": 3.0,
+                    "step": 0.001,
+                    "unit": "",
+                }
+            ],
         }
 
     def evaluate(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -262,6 +239,17 @@ class CavityModeCalculator(CalculatorDefinition):
             return {
                 "ok": False,
                 "error": "Add at least two elements before solving a cavity mode.",
+                "warnings": warnings,
+                "normalized_state": normalized,
+                "scene": scene,
+                "plot": self._empty_plot(scene),
+                "summary_cards": [],
+            }
+
+        if len(normalized["globals"]["endpoint_ids"]) != 2:
+            return {
+                "ok": False,
+                "error": "Select exactly two endpoint elements to solve the cavity mode.",
                 "warnings": warnings,
                 "normalized_state": normalized,
                 "scene": scene,
@@ -301,17 +289,13 @@ class CavityModeCalculator(CalculatorDefinition):
 
         elements = self._normalize_elements(raw_elements)
         gaps = self._normalize_gaps(raw_gaps, len(elements))
-
         element_ids = [element["id"] for element in elements]
-        if element_ids:
-            left_id, right_id = self._normalize_endpoint_ids(
-                element_ids,
-                raw_globals.get("cavity_left_id"),
-                raw_globals.get("cavity_right_id"),
-            )
-        else:
-            left_id = None
-            right_id = None
+        endpoint_ids = self._normalize_endpoint_ids(
+            element_ids,
+            raw_globals.get("endpoint_ids"),
+            raw_globals.get("cavity_left_id"),
+            raw_globals.get("cavity_right_id"),
+        )
 
         return {
             "globals": {
@@ -323,8 +307,7 @@ class CavityModeCalculator(CalculatorDefinition):
                 "right_environment_n": _positive_float(
                     raw_globals.get("right_environment_n"), 1.0, minimum=1e-6
                 ),
-                "cavity_left_id": left_id,
-                "cavity_right_id": right_id,
+                "endpoint_ids": endpoint_ids,
             },
             "elements": elements,
             "gaps": gaps,
@@ -387,38 +370,45 @@ class CavityModeCalculator(CalculatorDefinition):
 
     @staticmethod
     def _normalize_endpoint_ids(
-        element_ids: list[str], left_id: Any, right_id: Any
-    ) -> tuple[str, str]:
-        left = str(left_id) if left_id in element_ids else element_ids[0]
-        right = str(right_id) if right_id in element_ids else element_ids[-1]
+        element_ids: list[str],
+        endpoint_ids: Any,
+        cavity_left_id: Any,
+        cavity_right_id: Any,
+    ) -> list[str]:
+        normalized: list[str] = []
 
-        left_index = element_ids.index(left)
-        right_index = element_ids.index(right)
+        if isinstance(endpoint_ids, (list, tuple)):
+            for value in endpoint_ids:
+                endpoint_id = str(value)
+                if endpoint_id in element_ids and endpoint_id not in normalized:
+                    normalized.append(endpoint_id)
 
-        if left_index == right_index:
-            if right_index < len(element_ids) - 1:
-                right_index += 1
-            elif left_index > 0:
-                left_index -= 1
+        if not normalized and element_ids:
+            legacy = []
+            if cavity_left_id in element_ids:
+                legacy.append(str(cavity_left_id))
+            if cavity_right_id in element_ids:
+                legacy.append(str(cavity_right_id))
+            for endpoint_id in legacy:
+                if endpoint_id not in normalized:
+                    normalized.append(endpoint_id)
 
-        if left_index > right_index:
-            left_index, right_index = right_index, left_index
-
-        return element_ids[left_index], element_ids[right_index]
+        if len(normalized) > 2:
+            normalized = normalized[-2:]
+        return normalized
 
     def _build_scene(self, state: dict[str, Any]) -> dict[str, Any]:
         positions_mm = self._element_positions_mm(state)
-        element_by_id = {element["id"]: element for element in state["elements"]}
+        endpoint_ids = set(state["globals"]["endpoint_ids"])
 
         elements = []
-        for idx, element in enumerate(state["elements"]):
+        for idx, item in enumerate(state["elements"]):
             elements.append(
                 {
-                    **element,
+                    **item,
                     "position_mm": positions_mm[idx],
-                    "kind_title": _kind_title(element["kind"]),
-                    "is_cavity_left": element["id"] == state["globals"]["cavity_left_id"],
-                    "is_cavity_right": element["id"] == state["globals"]["cavity_right_id"],
+                    "kind_title": _kind_title(item["kind"]),
+                    "is_endpoint": item["id"] in endpoint_ids,
                 }
             )
 
@@ -430,21 +420,33 @@ class CavityModeCalculator(CalculatorDefinition):
                     "index": idx,
                     "left_id": state["elements"][idx]["id"],
                     "right_id": state["elements"][idx + 1]["id"],
-                    "left_label": element_by_id[state["elements"][idx]["id"]]["label"],
-                    "right_label": element_by_id[state["elements"][idx + 1]["id"]]["label"],
                     "left_position_mm": positions_mm[idx],
                     "right_position_mm": positions_mm[idx + 1],
                     "center_mm": 0.5 * (positions_mm[idx] + positions_mm[idx + 1]),
                 }
             )
 
+        environments = [
+            {
+                "side": "left",
+                "label": "Left environment",
+                "refractive_index": state["globals"]["left_environment_n"],
+                "insert_index": 0,
+            },
+            {
+                "side": "right",
+                "label": "Right environment",
+                "refractive_index": state["globals"]["right_environment_n"],
+                "insert_index": len(elements),
+            },
+        ]
+
         total_length_mm = positions_mm[-1] if positions_mm else 0.0
         return {
             "elements": elements,
             "gaps": gaps,
+            "environments": environments,
             "total_length_mm": total_length_mm,
-            "left_environment_n": state["globals"]["left_environment_n"],
-            "right_environment_n": state["globals"]["right_environment_n"],
         }
 
     @staticmethod
@@ -460,36 +462,36 @@ class CavityModeCalculator(CalculatorDefinition):
     def _solve_mode(self, state: dict[str, Any]):
         axis = OpticalAxis(default_refractive_index=1.0)
         refs_by_id: dict[str, Any] = {}
-
         positions_mm = self._element_positions_mm(state)
-        for position_mm, element in zip(positions_mm, state["elements"]):
+
+        for position_mm, item in zip(positions_mm, state["elements"]):
             position_m = 1e-3 * position_mm
-            if element["kind"] == "curved_surface":
+            if item["kind"] == "curved_surface":
                 ref = axis.add_curved_surface(
                     position=position_m,
-                    radius=1e-3 * element["radius_mm"],
-                    label=element["label"],
-                    reflection=element["reflection"],
-                    transmission=element["transmission"],
+                    radius=1e-3 * item["radius_mm"],
+                    label=item["label"],
+                    reflection=item["reflection"],
+                    transmission=item["transmission"],
                 )
-            elif element["kind"] == "plane_surface":
+            elif item["kind"] == "plane_surface":
                 ref = axis.add_plane_surface(
                     position=position_m,
-                    label=element["label"],
-                    reflection=element["reflection"],
-                    transmission=element["transmission"],
+                    label=item["label"],
+                    reflection=item["reflection"],
+                    transmission=item["transmission"],
                 )
-            elif element["kind"] == "lens":
+            elif item["kind"] == "lens":
                 ref = axis.add_lens(
                     position=position_m,
-                    focal_length=1e-3 * element["focal_length_mm"],
-                    label=element["label"],
-                    reflection=element["reflection"],
-                    transmission=element["transmission"],
+                    focal_length=1e-3 * item["focal_length_mm"],
+                    label=item["label"],
+                    reflection=item["reflection"],
+                    transmission=item["transmission"],
                 )
             else:
-                raise ValueError(f"Unsupported element kind {element['kind']!r}.")
-            refs_by_id[element["id"]] = ref
+                raise ValueError(f"Unsupported element kind {item['kind']!r}.")
+            refs_by_id[item["id"]] = ref
 
         if state["elements"]:
             first_ref = refs_by_id[state["elements"][0]["id"]]
@@ -519,45 +521,60 @@ class CavityModeCalculator(CalculatorDefinition):
                 label=gap["label"],
             )
 
+        endpoint_order = {item["id"]: index for index, item in enumerate(state["elements"])}
+        endpoint_ids = sorted(
+            state["globals"]["endpoint_ids"],
+            key=lambda item_id: endpoint_order[item_id],
+        )
         wavelength_m = 1e-9 * state["globals"]["wavelength_nm"]
+
         return axis.solve_cavity_mode(
             wavelength=wavelength_m,
-            left_endpoint=refs_by_id[state["globals"]["cavity_left_id"]],
-            right_endpoint=refs_by_id[state["globals"]["cavity_right_id"]],
+            left_endpoint=refs_by_id[endpoint_ids[0]],
+            right_endpoint=refs_by_id[endpoint_ids[1]],
         )
 
     def _build_plot(self, mode, scene: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
         output_length_m = 1e-3 * state["globals"]["output_length_mm"]
 
-        traces = [self._trace_from_path(mode.inside_path, "Inside cavity mode", "#005f73", "solid")]
-
-        left_trace = self._trace_from_output_branch(
-            mode.left_path,
-            output_length_m,
-            "Left outgoing beam",
-            "#bb3e03",
-            "dash",
+        segments = []
+        segments.extend(
+            self._segments_from_path(
+                mode.inside_path,
+                display_name="Inside cavity mode",
+                branch="inside",
+                color="#005f73",
+                dash="solid",
+            )
         )
-        if left_trace is not None:
-            traces.append(left_trace)
-
-        right_trace = self._trace_from_output_branch(
-            mode.right_path,
-            output_length_m,
-            "Right outgoing beam",
-            "#bb3e03",
-            "dash",
+        segments.extend(
+            self._segments_from_output_branch(
+                mode.left_path,
+                extension_length_m=output_length_m,
+                display_name="Left outgoing beam",
+                branch="left",
+                color="#bb3e03",
+                dash="dash",
+            )
         )
-        if right_trace is not None:
-            traces.append(right_trace)
+        segments.extend(
+            self._segments_from_output_branch(
+                mode.right_path,
+                extension_length_m=output_length_m,
+                display_name="Right outgoing beam",
+                branch="right",
+                color="#bb3e03",
+                dash="dash",
+            )
+        )
 
         max_radius_um = 120.0
-        for trace in traces:
-            if trace["y_um"]:
-                max_radius_um = max(max_radius_um, max(trace["y_um"]))
+        for segment in segments:
+            if segment["y_um"]:
+                max_radius_um = max(max_radius_um, max(segment["y_um"]))
 
         return {
-            "traces": traces,
+            "segments": segments,
             "elements": scene["elements"],
             "waist_marker": {
                 "x_mm": 1e3 * mode.waist_position,
@@ -569,43 +586,66 @@ class CavityModeCalculator(CalculatorDefinition):
 
     def _empty_plot(self, scene: dict[str, Any]) -> dict[str, Any]:
         return {
-            "traces": [],
+            "segments": [],
             "elements": scene["elements"],
             "waist_marker": None,
             "y_max_um": 200.0,
         }
 
-    def _trace_from_path(
+    def _segments_from_path(
         self,
         path,
-        name: str,
+        display_name: str,
+        branch: str,
         color: str,
         dash: str,
-        num_points_per_segment: int = 20,
-    ) -> dict[str, Any]:
-        samples = self._sample_path(path, num_points_per_segment=num_points_per_segment)
-        return {
-            "name": name,
-            "branch": path.name,
-            "color": color,
-            "dash": dash,
-            "x_mm": [sample["position_mm"] for sample in samples],
-            "y_um": [sample["spot_size_um"] for sample in samples],
-            "hover_text": [sample["hover_text"] for sample in samples],
-        }
+        num_points_per_segment: int = 24,
+    ) -> list[dict[str, Any]]:
+        segments = []
+        for segment_index, step in enumerate(path.steps):
+            if step.kind != "propagation" or step.physical_length <= 0:
+                continue
 
-    def _trace_from_output_branch(
+            samples = self._sample_step(path, step, num_points=num_points_per_segment)
+            beam_in = BeamPoint.from_q(
+                position=step.position_in,
+                q=step.q_in,
+                wavelength=path.wavelength,
+                refractive_index=step.index_in,
+                direction=path.direction,
+            )
+            segments.append(
+                self._build_segment(
+                    samples=samples,
+                    segment_id=f"{branch}-{segment_index}",
+                    branch=branch,
+                    display_name=display_name,
+                    segment_label=step.sector_label or step.label or display_name,
+                    color=color,
+                    dash=dash,
+                    reference_beam=beam_in,
+                )
+            )
+        return segments
+
+    def _segments_from_output_branch(
         self,
         path,
         extension_length_m: float,
-        name: str,
+        display_name: str,
+        branch: str,
         color: str,
         dash: str,
-        num_points_per_segment: int = 20,
-    ) -> dict[str, Any] | None:
-        samples = self._sample_path(path, num_points_per_segment=num_points_per_segment)
-        if not samples:
-            return None
+        num_points_per_segment: int = 24,
+    ) -> list[dict[str, Any]]:
+        segments = self._segments_from_path(
+            path=path,
+            display_name=display_name,
+            branch=branch,
+            color=color,
+            dash=dash,
+            num_points_per_segment=num_points_per_segment,
+        )
 
         if extension_length_m > 0 and path.cumulative_coefficient > 0 and not path.is_blocked:
             extension_samples = self._sample_extension(
@@ -613,44 +653,38 @@ class CavityModeCalculator(CalculatorDefinition):
                 wavelength=path.wavelength,
                 direction=path.direction,
                 length=extension_length_m,
-                name=path.name,
+                branch_name=display_name,
                 num_points=num_points_per_segment,
             )
             if extension_samples:
-                samples.extend(extension_samples[1:])
-
-        return {
-            "name": name,
-            "branch": path.name,
-            "color": color,
-            "dash": dash,
-            "x_mm": [sample["position_mm"] for sample in samples],
-            "y_um": [sample["spot_size_um"] for sample in samples],
-            "hover_text": [sample["hover_text"] for sample in samples],
-        }
-
-    def _sample_path(self, path, num_points_per_segment: int = 20) -> list[dict[str, Any]]:
-        samples = [self._serialize_beam(path.start_beam, path.name)]
-        for step in path.steps:
-            if step.kind == "propagation" and step.physical_length > 0:
-                local_positions = self._sample_gaussian_segment(
-                    step.q_in,
-                    step.physical_length,
-                    num_points=num_points_per_segment,
-                )
-                for distance in local_positions[1:]:
-                    position = step.position_in + step.direction * distance
-                    q_value = GaussianBeam.q_at_z(step.q_in, distance)
-                    beam = BeamPoint.from_q(
-                        position=position,
-                        q=q_value,
-                        wavelength=path.wavelength,
-                        refractive_index=step.index_in,
-                        direction=path.direction,
+                segments.append(
+                    self._build_segment(
+                        samples=extension_samples,
+                        segment_id=f"{branch}-extension",
+                        branch=branch,
+                        display_name=display_name,
+                        segment_label="Output extension",
+                        color=color,
+                        dash=dash,
+                        reference_beam=path.end_beam,
                     )
-                    samples.append(self._serialize_beam(beam, path.name))
-            else:
-                samples.append(self._serialize_beam(step.beam_out, path.name))
+                )
+        return segments
+
+    def _sample_step(self, path, step, num_points: int = 24) -> list[dict[str, Any]]:
+        local_positions = self._sample_gaussian_segment(step.q_in, step.physical_length, num_points=num_points)
+        samples = []
+        for distance in local_positions:
+            position = step.position_in + step.direction * distance
+            q_value = GaussianBeam.q_at_z(step.q_in, distance)
+            beam = BeamPoint.from_q(
+                position=position,
+                q=q_value,
+                wavelength=path.wavelength,
+                refractive_index=step.index_in,
+                direction=path.direction,
+            )
+            samples.append(self._serialize_beam(beam, path.name))
         return self._deduplicate_samples(samples)
 
     def _sample_extension(
@@ -659,8 +693,8 @@ class CavityModeCalculator(CalculatorDefinition):
         wavelength: float,
         direction: int,
         length: float,
-        name: str,
-        num_points: int = 20,
+        branch_name: str,
+        num_points: int = 24,
     ) -> list[dict[str, Any]]:
         local_positions = self._sample_gaussian_segment(end_beam.q, length, num_points=num_points)
         samples = []
@@ -674,8 +708,37 @@ class CavityModeCalculator(CalculatorDefinition):
                 refractive_index=end_beam.refractive_index,
                 direction=direction,
             )
-            samples.append(self._serialize_beam(beam, name))
+            samples.append(self._serialize_beam(beam, branch_name))
         return self._deduplicate_samples(samples)
+
+    @staticmethod
+    def _build_segment(
+        samples: list[dict[str, Any]],
+        segment_id: str,
+        branch: str,
+        display_name: str,
+        segment_label: str,
+        color: str,
+        dash: str,
+        reference_beam: BeamPoint,
+    ) -> dict[str, Any]:
+        return {
+            "id": segment_id,
+            "branch": branch,
+            "name": display_name,
+            "segment_label": segment_label,
+            "color": color,
+            "dash": dash,
+            "x_mm": [sample["position_mm"] for sample in samples],
+            "y_um": [sample["spot_size_um"] for sample in samples],
+            "hover_text": [sample["hover_text"] for sample in samples],
+            "waist_radius_um": 1e6 * reference_beam.waist_radius,
+            "waist_position_mm": 1e3 * reference_beam.waist_position,
+            "rayleigh_range_mm": 1e3 * reference_beam.rayleigh_range,
+            "refractive_index": reference_beam.refractive_index,
+            "x_start_mm": min(sample["position_mm"] for sample in samples),
+            "x_end_mm": max(sample["position_mm"] for sample in samples),
+        }
 
     @staticmethod
     def _sample_gaussian_segment(q0: complex, length: float, num_points: int = 12) -> np.ndarray:
@@ -699,6 +762,9 @@ class CavityModeCalculator(CalculatorDefinition):
         return {
             "position_mm": 1e3 * beam.position,
             "spot_size_um": 1e6 * beam.spot_size,
+            "waist_radius_um": 1e6 * beam.waist_radius,
+            "waist_position_mm": 1e3 * beam.waist_position,
+            "rayleigh_range_mm": 1e3 * beam.rayleigh_range,
             "hover_text": (
                 f"<b>{branch_name}</b><br>"
                 f"x = {1e3 * beam.position:.3f} mm<br>"
