@@ -102,9 +102,10 @@ directly into `web/app.js`.
 
 Instead:
 
+- register a UI module in `web/calculator_ui_registry.js`,
 - reuse shared field and formatting helpers from `web/ui_common.js`,
 - add layout- or calculator-specific browser logic in a dedicated module,
-- import that module from `web/app.js`.
+- let `web/app.js` stay focused on shared runtime orchestration.
 
 ## Step 5: Return Structured Output
 
@@ -191,7 +192,7 @@ You might do the following.
    - a call into `core.stark_shift`,
    - formatted plot data.
 3. Import and register `StarkShiftCalculator` in `app/registry.py`.
-4. If needed, add a focused frontend module in `web/` for any special layout behavior.
+4. If needed, add a focused frontend module in `web/` for any special layout behavior and register it in `web/calculator_ui_registry.js`.
 5. Refresh the browser app and verify that a new tab appears.
 
 ## When To Avoid Running In The Browser

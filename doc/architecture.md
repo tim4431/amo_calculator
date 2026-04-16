@@ -74,6 +74,8 @@ Typical responsibilities:
 Examples:
 
 - `web/app.js`
+- `web/calculator_ui_registry.js`
+- `web/simple_calculator_ui.js`
 - `web/ui_common.js`
 - `web/cavity_mode_ui.js`
 - `web/styles.css`
@@ -81,9 +83,11 @@ Examples:
 In the current frontend split:
 
 - `web/app.js` is the application shell and runtime orchestrator,
+- `web/calculator_ui_registry.js` maps calculator layouts to focused UI modules,
+- `web/simple_calculator_ui.js` is the fallback UI for form-style calculators,
 - `web/ui_common.js` contains reusable field and formatting helpers,
-- `web/cavity_mode_ui.js` contains cavity-mode-specific browser logic such as
-  optical-axis cards, component icons, and plot decorations.
+- `web/cavity_mode_ui.js` contains the optical-axis UI module, including
+  cards, component icons, and plot decorations used by cavity-style calculators.
 
 ### 4. Static entrypoint and build scripts
 
@@ -219,8 +223,10 @@ Use this rule of thumb.
 Within `web/`, prefer a second split:
 
 - put general-purpose browser helpers in shared modules such as `web/ui_common.js`,
-- put calculator- or layout-specific rendering logic in focused modules such as
-  `web/cavity_mode_ui.js`,
+- register calculator- or layout-specific rendering logic through
+  `web/calculator_ui_registry.js`,
+- keep focused UI modules such as `web/simple_calculator_ui.js` or
+  `web/cavity_mode_ui.js` free of runtime bootstrapping concerns,
 - keep `web/app.js` as the orchestration layer that owns runtime state,
   registry calls, and high-level rendering flow.
 

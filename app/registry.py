@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from .base import CalculatorDefinition, to_serializable
-from .calculators import CavityModeCalculator, GaussianBeamCalculator
+from .calculators import CavityModeCalculator, GaussianBeamCalculator, MarimoCalculator
 
 
 # Single source of truth for which Python files the browser runtime must load.
@@ -21,6 +21,7 @@ BROWSER_PYTHON_FILES: list[str] = [
     "app/calculators/__init__.py",
     "app/calculators/cavity_mode.py",
     "app/calculators/gaussian_beam.py",
+    "app/calculators/marimo.py",
 ]
 
 
@@ -29,6 +30,7 @@ CALCULATORS: dict[str, CalculatorDefinition] = {
     for calculator in (
         CavityModeCalculator(),
         GaussianBeamCalculator(),
+        MarimoCalculator(),
     )
 }
 

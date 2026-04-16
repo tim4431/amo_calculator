@@ -8,6 +8,7 @@
     "app/registry.py",
     "app/calculators/__init__.py",
     "app/calculators/cavity_mode.py",
-    "app/calculators/gaussian_beam.py"
+    "app/calculators/gaussian_beam.py",
+    "app/calculators/marimo.py"
   ]
 }

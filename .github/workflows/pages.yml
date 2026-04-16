@@ -47,7 +47,8 @@ jobs:
             app/registry.py \
             app/calculators/__init__.py \
             app/calculators/cavity_mode.py \
-            app/calculators/gaussian_beam.py
+            app/calculators/gaussian_beam.py \
+            app/calculators/marimo.py
 
       - name: Run calculator smoke tests
         run: |
@@ -69,6 +70,11 @@ jobs:
           assert beam_result["plot"]["traces"], beam_result["plot"]
           assert beam_result["summary_cards"], beam_result
 
+          marimo_schema = get_calculator_schema("marimo")
+          marimo_result = run_calculator("marimo", marimo_schema["default_state"])
+          assert marimo_result["ok"], marimo_result
+          assert marimo_result["plot"]["external_url"] == "https://amo_calculator.xwtim.com", marimo_result["plot"]
+
           cavity_finesse = next(
               (metric["value"] for metric in cavity_result["plot_metrics"] if metric["label"] == "Finesse"),
               "n/a",
@@ -80,6 +86,7 @@ jobs:
 
           print("cavity finesse:", cavity_finesse)
           print("gaussian waist:", gaussian_waist)
+          print("marimo url:", marimo_result["plot"]["external_url"])
           PY
 
       - name: Build Pages artifact

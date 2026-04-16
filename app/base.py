@@ -15,14 +15,20 @@ class CalculatorDefinition(ABC):
     title: str
     description: str
     layout: str
+    tab_url: str | None = None
+    open_in_new_tab: bool = False
 
     def manifest(self) -> dict[str, Any]:
-        return {
+        manifest = {
             "id": self.calculator_id,
             "title": self.title,
             "description": self.description,
             "layout": self.layout,
         }
+        if self.tab_url:
+            manifest["tab_url"] = self.tab_url
+            manifest["open_in_new_tab"] = self.open_in_new_tab
+        return manifest
 
     @abstractmethod
     def schema(self) -> dict[str, Any]:

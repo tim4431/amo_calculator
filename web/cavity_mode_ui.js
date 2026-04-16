@@ -2,8 +2,10 @@ import {
   clamp,
   deepCopy,
   element,
+  formatNumber,
   formatCompactNumber,
   getValueByPath,
+  hexToRgba,
   linspace,
   renderField,
 } from "./ui_common.js";
@@ -151,9 +153,63 @@ export function buildComponentPalette(schema, onPaletteDragStart) {
 }
 
 
+function plotXSpan(plot) {
+  const xValues = [];
+  for (const item of plot.elements || []) {
+    xValues.push(Number(item.position_mm));
+  }
+  for (const segment of plot.segments || []) {
+    xValues.push(...(segment.x_mm || []).map((value) => Number(value)));
+  }
+  for (const trace of plot.traces || []) {
+    xValues.push(...(trace.x_mm || []).map((value) => Number(value)));
+  }
+  if (plot.waist_marker) {
+    xValues.push(Number(plot.waist_marker.x_mm));
+  }
+  if (!xValues.length) {
+    return 80;
+  }
+  return Math.max(1, Math.max(...xValues) - Math.min(...xValues));
+}
+
+
+function median(values) {
+  if (!values.length) {
+    return 80;
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) {
+    return sorted[middle];
+  }
+  return 0.5 * (sorted[middle - 1] + sorted[middle]);
+}
+
+
+function referenceCurvedSurfaceRocMm(plot) {
+  const values = (plot.elements || [])
+    .filter((item) => item.kind === "curved_surface")
+    .map((item) => Math.abs(Number(item.radius_mm)))
+    .filter((value) => Number.isFinite(value) && value > 1e-9);
+  return median(values);
+}
+
+
+function curvedSurfaceDepthMm(radiusMm, referenceRocMm, axisSpanMm) {
+  const absoluteRadiusMm = Math.max(1e-9, Math.abs(Number(radiusMm) || referenceRocMm || 80));
+  const reference = Math.max(1.0, referenceRocMm || 80);
+  const baseDepthMm = clamp(0.016 * axisSpanMm, 0.28, 1.8);
+  const curvatureScale = clamp(reference / absoluteRadiusMm, 0.28, 3.2);
+  return baseDepthMm * curvatureScale;
+}
+
+
 export function buildElementPlotTraces(plot, yMax) {
   const traces = [];
   const annotations = [];
+  const axisSpanMm = plotXSpan(plot);
+  const referenceRocMm = referenceCurvedSurfaceRocMm(plot);
   for (const item of plot.elements || []) {
     const topY = 0.93 * yMax;
     const labelY = 1.02 * yMax;
@@ -172,7 +228,10 @@ export function buildElementPlotTraces(plot, yMax) {
     } else if (item.kind === "curved_surface") {
       const y = linspace(-topY, topY, 180);
       const normalized = y.map((value) => value / topY);
-      const x = normalized.map((value) => item.position_mm + Math.sign(item.radius_mm || 1) * 1.1 * value * value);
+      const visualDepthMm = curvedSurfaceDepthMm(item.radius_mm, referenceRocMm, axisSpanMm);
+      const x = normalized.map((value) =>
+        item.position_mm + Math.sign(item.radius_mm || 1) * visualDepthMm * value * value
+      );
       traces.push({
         x,
         y,
@@ -777,5 +836,718 @@ export function createOpticalAxisController({
     ensureValidSelection,
     renderAxisBuilder,
     renderBuilderToolbar,
+  };
+}
+
+
+function setPlotReadout(readoutHost, content) {
+  readoutHost.replaceChildren(
+    element("p", { className: "plot-readout-title", text: content.title }),
+    element("p", { className: "plot-readout-body", html: content.body }),
+  );
+}
+
+
+function collectXCoordinates(plot) {
+  const values = [];
+  for (const segment of plot.segments || []) {
+    values.push(...segment.x_mm);
+  }
+  for (const trace of plot.traces || []) {
+    values.push(...trace.x_mm);
+  }
+  for (const item of plot.elements || []) {
+    values.push(item.position_mm);
+  }
+  if (plot.waist_marker) {
+    values.push(plot.waist_marker.x_mm);
+  }
+  return values.length ? values : [0];
+}
+
+
+function defaultPlotReadout(plot, result) {
+  if (plot.segments && plot.segments.length) {
+    return {
+      title: "Move across the plot",
+      body: "A vertical cursor will follow your mouse anywhere inside the plotting area. The active interval will show its local mode as a solid segment, with dashed continuation outside that interval and a waist marker when visible.",
+    };
+  }
+  if (result && result.error) {
+    return {
+      title: "Waiting for a valid optical axis",
+      body: result.error,
+    };
+  }
+  return {
+    title: "Hover the plot",
+    body: "Move over the plotted beam envelope to inspect the current cross-section.",
+  };
+}
+
+
+function interpolateSegmentSpot(segment, xValue) {
+  const x = segment.x_mm;
+  const y = segment.y_um;
+  if (!x.length) {
+    return 0;
+  }
+
+  for (let index = 1; index < x.length; index += 1) {
+    const left = x[index - 1];
+    const right = x[index];
+    if ((left <= xValue && xValue <= right) || (right <= xValue && xValue <= left)) {
+      if (left === right) {
+        return y[index];
+      }
+      const fraction = (xValue - left) / (right - left);
+      return y[index - 1] + fraction * (y[index] - y[index - 1]);
+    }
+  }
+
+  let bestIndex = 0;
+  let bestDistance = Math.abs(x[0] - xValue);
+  for (let index = 1; index < x.length; index += 1) {
+    const distance = Math.abs(x[index] - xValue);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  }
+  return y[bestIndex];
+}
+
+
+function gaussianEnvelopeFromSegment(segment, xValues) {
+  const waistRadius = Number(segment.waist_radius_um);
+  const waistPosition = Number(segment.waist_position_mm);
+  const rayleighRange = Math.max(1e-9, Math.abs(Number(segment.rayleigh_range_mm)));
+  return xValues.map((xValue) => waistRadius * Math.sqrt(1 + ((xValue - waistPosition) / rayleighRange) ** 2));
+}
+
+
+function plotXBounds(plot) {
+  const coordinates = collectXCoordinates(plot);
+  const xMin = Math.min(...coordinates);
+  const xMax = Math.max(...coordinates);
+  const span = Math.max(1.0, xMax - xMin);
+  return {
+    xMin: xMin - 0.03 * span,
+    xMax: xMax + 0.03 * span,
+  };
+}
+
+
+function sampleLocalModeOverlay(plot, segment) {
+  const { xMin, xMax } = plotXBounds(plot);
+  const xStart = Math.min(segment.x_start_mm, segment.x_end_mm);
+  const xEnd = Math.max(segment.x_start_mm, segment.x_end_mm);
+
+  const leftX = xMin < xStart ? linspace(xMin, xStart, 80) : [];
+  const insideX = linspace(xStart, xEnd, 120);
+  const rightX = xEnd < xMax ? linspace(xEnd, xMax, 80) : [];
+
+  return {
+    leftX,
+    leftY: gaussianEnvelopeFromSegment(segment, leftX),
+    insideX,
+    insideY: gaussianEnvelopeFromSegment(segment, insideX),
+    rightX,
+    rightY: gaussianEnvelopeFromSegment(segment, rightX),
+    waistInBounds: segment.waist_position_mm >= xMin && segment.waist_position_mm <= xMax,
+  };
+}
+
+
+function buildHoverReadout(segment, xValue) {
+  const spotSizeUm = interpolateSegmentSpot(segment, xValue);
+  return {
+    title: `${segment.name} · ${segment.segment_label}`,
+    body:
+      `x = <strong>${formatNumber(xValue, 3)} mm</strong><br>` +
+      `spot size = <strong>${formatNumber(spotSizeUm, 3)} um</strong><br>` +
+      `local waist w0 = <strong>${formatNumber(segment.waist_radius_um, 3)} um</strong><br>` +
+      `local waist x0 = <strong>${formatNumber(segment.waist_position_mm, 3)} mm</strong><br>` +
+      `Rayleigh range = <strong>${formatNumber(segment.rayleigh_range_mm, 3)} mm</strong><br>` +
+      `n = <strong>${formatNumber(segment.refractive_index, 4)}</strong>`,
+  };
+}
+
+
+function buildCursorOnlyReadout(xValue) {
+  return {
+    title: "No beam segment at this x",
+    body:
+      `x = <strong>${formatNumber(xValue, 3)} mm</strong><br>` +
+      "Move the cursor onto an interval that contains a propagated beam segment to inspect its local mode data.",
+  };
+}
+
+
+function buildBaseShapes(plot) {
+  return [
+    {
+      type: "line",
+      x0: Math.min(...collectXCoordinates(plot), -10),
+      x1: Math.max(...collectXCoordinates(plot), 10),
+      y0: 0,
+      y1: 0,
+      line: { color: "rgba(36, 31, 23, 0.12)", width: 1 },
+    },
+  ];
+}
+
+
+function segmentContainsX(segment, xValue) {
+  const minimum = Math.min(segment.x_start_mm, segment.x_end_mm) - 1e-9;
+  const maximum = Math.max(segment.x_start_mm, segment.x_end_mm) + 1e-9;
+  return xValue >= minimum && xValue <= maximum;
+}
+
+
+function findSegmentAtX(plot, xValue, preferredSegmentId = null) {
+  const segments = plot.segments || [];
+  if (!segments.length) {
+    return null;
+  }
+
+  if (preferredSegmentId) {
+    const preferred = segments.find((segment) => segment.id === preferredSegmentId);
+    if (preferred && segmentContainsX(preferred, xValue)) {
+      return preferred;
+    }
+  }
+
+  const containing = segments.filter((segment) => segmentContainsX(segment, xValue));
+  if (!containing.length) {
+    return null;
+  }
+  if (containing.length === 1) {
+    return containing[0];
+  }
+
+  return containing.reduce((best, candidate) => {
+    const bestCenter = 0.5 * (best.x_start_mm + best.x_end_mm);
+    const candidateCenter = 0.5 * (candidate.x_start_mm + candidate.x_end_mm);
+    return Math.abs(candidateCenter - xValue) < Math.abs(bestCenter - xValue) ? candidate : best;
+  });
+}
+
+
+export function createOpticalAxisUi({
+  getState,
+  getSchema,
+  onCommit,
+  onUpdateGlobal,
+  onRerender,
+}) {
+  const axisController = createOpticalAxisController({
+    getState,
+    getSchema,
+    onCommit,
+    onUpdateGlobal,
+    onRerender,
+  });
+
+  let plotTraceMeta = [];
+  let currentHoverSegmentId = null;
+  let plotPointerMoveHandler = null;
+  let plotPointerLeaveHandler = null;
+  let activeModeOverlayIndices = null;
+  let activePlotHost = null;
+
+  function detachPlotListeners() {
+    if (!activePlotHost) {
+      return;
+    }
+    if (typeof activePlotHost.removeAllListeners === "function") {
+      activePlotHost.removeAllListeners("plotly_hover");
+      activePlotHost.removeAllListeners("plotly_unhover");
+    }
+    if (plotPointerMoveHandler) {
+      activePlotHost.removeEventListener("mousemove", plotPointerMoveHandler);
+      plotPointerMoveHandler = null;
+    }
+    if (plotPointerLeaveHandler) {
+      activePlotHost.removeEventListener("mouseleave", plotPointerLeaveHandler);
+      plotPointerLeaveHandler = null;
+    }
+  }
+
+  function updateActiveModeOverlay(plotHost, plot, segment) {
+    if (!(activeModeOverlayIndices && plotHost)) {
+      return;
+    }
+
+    if (!segment) {
+      const empty = [[], [], [], [], [], [], [], []];
+      Plotly.restyle(plotHost, { x: empty, y: empty, text: [[], [], [], [], [], [], [], []] }, activeModeOverlayIndices);
+      return;
+    }
+
+    const overlay = sampleLocalModeOverlay(plot, segment);
+    const fillX = [...overlay.insideX, ...[...overlay.insideX].reverse()];
+    const fillY = [...overlay.insideY, ...[...overlay.insideY].reverse().map((value) => -value)];
+    const waistLabel = `x0 = ${formatNumber(segment.waist_position_mm, 3)} mm<br>w = ${formatNumber(segment.waist_radius_um, 3)} um`;
+    const waistX = overlay.waistInBounds ? [segment.waist_position_mm] : [];
+    const waistY = overlay.waistInBounds ? [0] : [];
+    const waistText = overlay.waistInBounds ? [waistLabel] : [];
+
+    Plotly.restyle(plotHost, {
+      x: [
+        fillX,
+        overlay.insideX,
+        overlay.insideX,
+        overlay.leftX,
+        overlay.leftX,
+        overlay.rightX,
+        overlay.rightX,
+        waistX,
+      ],
+      y: [
+        fillY,
+        overlay.insideY,
+        overlay.insideY.map((value) => -value),
+        overlay.leftY,
+        overlay.leftY.map((value) => -value),
+        overlay.rightY,
+        overlay.rightY.map((value) => -value),
+        waistY,
+      ],
+      text: [
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        waistText,
+      ],
+      "line.color": [
+        hexToRgba(segment.color, 0),
+        segment.color,
+        segment.color,
+        segment.color,
+        segment.color,
+        segment.color,
+        segment.color,
+        "#111111",
+      ],
+      fillcolor: [
+        hexToRgba(segment.color, 0.22),
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+      ],
+      "marker.color": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "#111111",
+      ],
+    }, activeModeOverlayIndices);
+  }
+
+  function restyleBeamTraces(plotHost, segmentId = null) {
+    if (!plotTraceMeta.length) {
+      return;
+    }
+    const opacities = plotTraceMeta.map((meta) => {
+      if (meta.kind === "beam-fill") {
+        if (!segmentId) {
+          return meta.baseOpacity || 0.18;
+        }
+        return 0.05;
+      }
+      if (meta.kind !== "beam-line") {
+        return 1;
+      }
+      if (!segmentId) {
+        return 1;
+      }
+      return 0.14;
+    });
+    const dashes = plotTraceMeta.map((meta) => meta.baseDash || "solid");
+    const widths = plotTraceMeta.map((meta) => {
+      if (meta.kind !== "beam-line") {
+        return meta.baseWidth || 3;
+      }
+      if (!segmentId) {
+        return 4;
+      }
+      return 3.0;
+    });
+    Plotly.restyle(plotHost, {
+      opacity: opacities,
+      "line.dash": dashes,
+      "line.width": widths,
+    });
+  }
+
+  function getPlotPointerState(plotHost, event) {
+    if (!(plotHost && plotHost._fullLayout && plotHost._fullLayout.xaxis && plotHost._fullLayout.yaxis)) {
+      return null;
+    }
+
+    const rect = plotHost.getBoundingClientRect();
+    const xPixel = event.clientX - rect.left;
+    const xaxis = plotHost._fullLayout.xaxis;
+    const xOffset = xaxis._offset || 0;
+    const xLength = xaxis._length || 0;
+    const clampedPixel = clamp(xPixel, xOffset, xOffset + xLength);
+
+    return {
+      xValue: xaxis.p2l(clampedPixel - xOffset),
+    };
+  }
+
+  function applyPlotCursor(plotHost, readoutHost, plot, xValue) {
+    if (!(plot.segments && plot.segments.length)) {
+      return;
+    }
+
+    const segment = findSegmentAtX(plot, xValue, currentHoverSegmentId);
+    const activeSegmentId = segment ? segment.id : null;
+    currentHoverSegmentId = activeSegmentId;
+    restyleBeamTraces(plotHost, activeSegmentId);
+    updateActiveModeOverlay(plotHost, plot, segment);
+    setPlotReadout(readoutHost, segment ? buildHoverReadout(segment, xValue) : buildCursorOnlyReadout(xValue));
+    Plotly.relayout(plotHost, {
+      shapes: [
+        ...buildBaseShapes(plot),
+        {
+          type: "line",
+          x0: xValue,
+          x1: xValue,
+          y0: -1.18 * plot.y_max_um,
+          y1: 1.18 * plot.y_max_um,
+          line: { color: "rgba(11, 114, 133, 0.65)", width: 2, dash: "dot" },
+        },
+      ],
+    });
+  }
+
+  function clearPlotHover(plotHost, readoutHost, plot, result) {
+    currentHoverSegmentId = null;
+    restyleBeamTraces(plotHost, null);
+    updateActiveModeOverlay(plotHost, plot, null);
+    setPlotReadout(readoutHost, defaultPlotReadout(plot, result));
+    Plotly.relayout(plotHost, {
+      shapes: buildBaseShapes(plot),
+    });
+  }
+
+  return {
+    matches({ schema }) {
+      return schema?.layout === "optical_axis";
+    },
+
+    getShellConfig({ calculator }) {
+      return {
+        showHero: false,
+        plotSectionTitle: calculator?.title || "Optical axis",
+        builderHint: "Drag components onto the axis, drop onto other elements to swap them, edit parameters directly in place, and move across the plot to inspect the active interval.",
+        successHint: "Edit element, gap, and boundary parameters directly in place. Move anywhere across the plot to inspect the active interval and its local beam data.",
+        showBuilder: true,
+      };
+    },
+
+    clearTransientState() {
+      axisController.clearEditor();
+      currentHoverSegmentId = null;
+      plotTraceMeta = [];
+      activeModeOverlayIndices = null;
+      detachPlotListeners();
+    },
+
+    syncState() {
+      axisController.ensureValidSelection();
+    },
+
+    renderBuilder({ builderPanel, builderToolbar, builderContainer }) {
+      builderPanel.style.display = "";
+      axisController.renderBuilderToolbar(builderToolbar);
+      axisController.renderAxisBuilder(builderPanel, builderContainer);
+    },
+
+    renderPlot({ plotHost, readoutHost, result, schema }) {
+      const plot = (result && result.plot) || {
+        traces: [],
+        segments: [],
+        elements: [],
+        waist_marker: null,
+        y_max_um: 200,
+      };
+      const yMax = plot.y_max_um || 200;
+      const xBounds = plotXBounds(plot);
+      const traces = [];
+      const traceMeta = [];
+
+      activePlotHost = plotHost;
+      detachPlotListeners();
+      currentHoverSegmentId = null;
+
+      if (plot.segments && plot.segments.length) {
+        const legendSeen = new Set();
+        for (const segment of plot.segments) {
+          const showLegend = !legendSeen.has(segment.branch);
+          legendSeen.add(segment.branch);
+          traces.push({
+            x: [...segment.x_mm, ...[...segment.x_mm].reverse()],
+            y: [...segment.y_um, ...[...segment.y_um].reverse().map((value) => -value)],
+            type: "scatter",
+            mode: "lines",
+            hoverinfo: "skip",
+            fill: "toself",
+            fillcolor: hexToRgba(segment.color, 0.18),
+            line: { color: hexToRgba(segment.color, 0.0), width: 0 },
+            showlegend: false,
+            opacity: 0.18,
+          });
+          traceMeta.push({
+            kind: "beam-fill",
+            segmentId: segment.id,
+            baseOpacity: 0.18,
+            baseDash: "solid",
+            baseWidth: 0,
+          });
+          traces.push({
+            x: segment.x_mm,
+            y: segment.y_um,
+            type: "scatter",
+            mode: "lines",
+            name: segment.name,
+            text: segment.hover_text,
+            hovertemplate: "%{text}<extra></extra>",
+            customdata: segment.x_mm.map(() => segment.id),
+            hoverinfo: "skip",
+            line: { color: segment.color, width: 4, dash: "solid" },
+            showlegend: showLegend,
+            legendgroup: segment.branch,
+            opacity: 1,
+          });
+          traceMeta.push({ kind: "beam-line", segmentId: segment.id, baseDash: "solid", baseWidth: 4 });
+          traces.push({
+            x: segment.x_mm,
+            y: segment.y_um.map((value) => -value),
+            type: "scatter",
+            mode: "lines",
+            text: segment.hover_text,
+            hovertemplate: "%{text}<extra></extra>",
+            customdata: segment.x_mm.map(() => segment.id),
+            hoverinfo: "skip",
+            line: { color: segment.color, width: 4, dash: "solid" },
+            showlegend: false,
+            legendgroup: segment.branch,
+            opacity: 1,
+          });
+          traceMeta.push({ kind: "beam-line", segmentId: segment.id, baseDash: "solid", baseWidth: 4 });
+        }
+      } else {
+        for (const trace of plot.traces || []) {
+          traces.push({
+            x: trace.x_mm,
+            y: trace.y_um,
+            type: "scatter",
+            mode: "lines",
+            name: trace.name,
+            text: trace.hover_text,
+            hovertemplate: "%{text}<extra></extra>",
+            hoverinfo: "skip",
+            line: { color: trace.color, width: 4, dash: trace.dash || "solid" },
+            opacity: 1,
+          });
+          traceMeta.push({ kind: "beam-line", segmentId: null, baseDash: trace.dash || "solid", baseWidth: 4 });
+          traces.push({
+            x: trace.x_mm,
+            y: trace.y_um.map((value) => -value),
+            type: "scatter",
+            mode: "lines",
+            showlegend: false,
+            text: trace.hover_text,
+            hovertemplate: "%{text}<extra></extra>",
+            hoverinfo: "skip",
+            line: { color: trace.color, width: 4, dash: trace.dash || "solid" },
+            opacity: 1,
+          });
+          traceMeta.push({ kind: "beam-line", segmentId: null, baseDash: trace.dash || "solid", baseWidth: 4 });
+        }
+      }
+
+      const overlayIndices = [];
+      const overlayTraces = [
+        {
+          x: [],
+          y: [],
+          type: "scatter",
+          mode: "lines",
+          hoverinfo: "skip",
+          fill: "toself",
+          fillcolor: "rgba(0, 95, 115, 0.18)",
+          line: { color: "rgba(0,0,0,0)", width: 0 },
+          showlegend: false,
+        },
+        {
+          x: [],
+          y: [],
+          type: "scatter",
+          mode: "lines",
+          hoverinfo: "skip",
+          line: { color: "#005f73", width: 4.8, dash: "solid" },
+          showlegend: false,
+        },
+        {
+          x: [],
+          y: [],
+          type: "scatter",
+          mode: "lines",
+          hoverinfo: "skip",
+          line: { color: "#005f73", width: 4.8, dash: "solid" },
+          showlegend: false,
+        },
+        {
+          x: [],
+          y: [],
+          type: "scatter",
+          mode: "lines",
+          hoverinfo: "skip",
+          line: { color: "#005f73", width: 3.6, dash: "dash" },
+          showlegend: false,
+        },
+        {
+          x: [],
+          y: [],
+          type: "scatter",
+          mode: "lines",
+          hoverinfo: "skip",
+          line: { color: "#005f73", width: 3.6, dash: "dash" },
+          showlegend: false,
+        },
+        {
+          x: [],
+          y: [],
+          type: "scatter",
+          mode: "lines",
+          hoverinfo: "skip",
+          line: { color: "#005f73", width: 3.6, dash: "dash" },
+          showlegend: false,
+        },
+        {
+          x: [],
+          y: [],
+          type: "scatter",
+          mode: "lines",
+          hoverinfo: "skip",
+          line: { color: "#005f73", width: 3.6, dash: "dash" },
+          showlegend: false,
+        },
+        {
+          x: [],
+          y: [],
+          type: "scatter",
+          mode: "markers+text",
+          text: [],
+          textposition: "top center",
+          hoverinfo: "skip",
+          marker: { color: "#111111", size: 9 },
+          textfont: { size: 12, color: "#111111" },
+          showlegend: false,
+        },
+      ];
+      for (const trace of overlayTraces) {
+        overlayIndices.push(traces.length);
+        traces.push(trace);
+        traceMeta.push({
+          kind: "overlay",
+          segmentId: null,
+          baseDash: trace.line ? trace.line.dash || "solid" : "solid",
+          baseWidth: trace.line ? trace.line.width || 0 : 0,
+        });
+      }
+
+      const elementPlot = buildElementPlotTraces(plot, yMax);
+      for (const trace of elementPlot.traces) {
+        traces.push(trace);
+        traceMeta.push({ kind: "decoration", segmentId: null, baseDash: "solid", baseWidth: 3 });
+      }
+
+      if (plot.waist_marker) {
+        traces.push({
+          x: [plot.waist_marker.x_mm],
+          y: [plot.waist_marker.y_um],
+          type: "scatter",
+          mode: "markers+text",
+          text: [plot.waist_marker.label],
+          textposition: "top center",
+          marker: { color: "#000000", size: 11 },
+          hovertemplate: "Waist<br>x = %{x:.3f} mm<extra></extra>",
+          name: "Waist",
+        });
+        traceMeta.push({ kind: "decoration", segmentId: null, baseDash: "solid", baseWidth: 0 });
+      }
+
+      plotTraceMeta = traceMeta;
+      activeModeOverlayIndices = overlayIndices;
+      Plotly.react(plotHost, traces, {
+        paper_bgcolor: "rgba(0,0,0,0)",
+        plot_bgcolor: "rgba(255,255,255,0.82)",
+        margin: { t: 24, r: 24, b: 64, l: 72 },
+        xaxis: {
+          title: "Axis Position [mm]",
+          range: [xBounds.xMin, xBounds.xMax],
+          zeroline: false,
+          gridcolor: "rgba(36, 31, 23, 0.1)",
+        },
+        yaxis: {
+          title: "Beam Radius [um]",
+          range: [-1.18 * yMax, 1.18 * yMax],
+          zeroline: false,
+          gridcolor: "rgba(36, 31, 23, 0.1)",
+        },
+        hovermode: false,
+        hoverdistance: -1,
+        legend: {
+          orientation: "h",
+          x: 1,
+          xanchor: "right",
+          y: 1.12,
+        },
+        annotations: elementPlot.annotations,
+        shapes: buildBaseShapes(plot),
+        uirevision: `plot-${(schema && schema.id) || "calculator"}`,
+      }, {
+        responsive: true,
+        displaylogo: false,
+        modeBarButtonsToRemove: ["lasso2d", "select2d"],
+      });
+
+      plotPointerMoveHandler = (event) => {
+        const pointerState = getPlotPointerState(plotHost, event);
+        if (!pointerState) {
+          return;
+        }
+        applyPlotCursor(plotHost, readoutHost, plot, pointerState.xValue);
+      };
+      plotPointerLeaveHandler = () => {
+        if (!(plot.segments && plot.segments.length)) {
+          return;
+        }
+        clearPlotHover(plotHost, readoutHost, plot, result);
+      };
+
+      plotHost.addEventListener("mousemove", plotPointerMoveHandler);
+      plotHost.addEventListener("mouseleave", plotPointerLeaveHandler);
+
+      setPlotReadout(readoutHost, defaultPlotReadout(plot, result));
+    },
   };
 }

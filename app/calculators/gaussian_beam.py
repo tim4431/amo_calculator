@@ -137,6 +137,9 @@ class GaussianBeamCalculator(CalculatorDefinition):
             "elements": [],
             "waist_marker": {"x_mm": 0.0, "y_um": 0.0, "label": "Waist"},
             "y_max_um": 1.15 * float(np.max(1e6 * w)),
+            "mirror_y": True,
+            "x_axis_title": "Axis Position [mm]",
+            "y_axis_title": "Beam Radius [um]",
         }
 
         summary_cards = [
