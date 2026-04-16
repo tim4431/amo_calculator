@@ -15,7 +15,7 @@ from ..base import CalculatorDefinition
 
 _DEFAULT_STATE: dict[str, Any] = {
     "globals": {
-        "wavelength_nm": 1064.0,
+        "wavelength_nm": 780.0,
         "endpoint_ids": ["m1", "m2"],
     },
     "boundaries": {
@@ -85,6 +85,14 @@ def _kind_title(kind: str) -> str:
         "plane_surface": "Plane Surface",
         "lens": "Lens",
     }.get(kind, "Element")
+
+
+def _default_reflection(kind: str) -> float:
+    return {
+        "curved_surface": 0.95,
+        "plane_surface": 1.0,
+        "lens": 0.0,
+    }.get(kind, 0.0)
 
 
 class CavityModeCalculator(CalculatorDefinition):
@@ -281,7 +289,7 @@ class CavityModeCalculator(CalculatorDefinition):
 
         return {
             "globals": {
-                "wavelength_nm": _positive_float(raw_globals.get("wavelength_nm"), 1064.0),
+                "wavelength_nm": _positive_float(raw_globals.get("wavelength_nm"), 780.0),
                 "endpoint_ids": endpoint_ids,
             },
             "boundaries": self._normalize_boundaries(
@@ -321,7 +329,7 @@ class CavityModeCalculator(CalculatorDefinition):
                 "id": element_id,
                 "kind": kind,
                 "label": label,
-                "reflection": _clamped_float(reflection_value, 0.0, 0.0, 1.0),
+                "reflection": _clamped_float(reflection_value, _default_reflection(kind), 0.0, 1.0),
             }
             if kind == "curved_surface":
                 radius_mm = _safe_float(raw.get("radius_mm"), 50.0)

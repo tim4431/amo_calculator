@@ -205,56 +205,79 @@ function curvedSurfaceDepthMm(radiusMm, referenceRocMm, axisSpanMm) {
 }
 
 
+function elementGeometry(item, topY, axisSpanMm, referenceRocMm) {
+  if (item.kind === "plane_surface") {
+    const y = linspace(-topY, topY, 2);
+    return {
+      x: y.map(() => item.position_mm),
+      y,
+      line: { color: "#334155", width: 3 },
+      fill: undefined,
+      fillcolor: undefined,
+      hoverWidthMm: Math.max(0.35, 0.012 * axisSpanMm),
+    };
+  }
+
+  if (item.kind === "curved_surface") {
+    const y = linspace(-topY, topY, 180);
+    const normalized = y.map((value) => value / topY);
+    const visualDepthMm = curvedSurfaceDepthMm(item.radius_mm, referenceRocMm, axisSpanMm);
+    return {
+      x: normalized.map((value) =>
+        item.position_mm + Math.sign(item.radius_mm || 1) * visualDepthMm * value * value
+      ),
+      y,
+      line: { color: "#334155", width: 3 },
+      fill: undefined,
+      fillcolor: undefined,
+      hoverWidthMm: Math.max(0.35, visualDepthMm + 0.12),
+    };
+  }
+
+  if (item.kind === "lens") {
+    const theta = linspace(0, 2 * Math.PI, 180);
+    const xRadius = 0.42;
+    const yRadius = topY * 0.9;
+    return {
+      x: theta.map((value) => item.position_mm + xRadius * Math.cos(value)),
+      y: theta.map((value) => yRadius * Math.sin(value)),
+      line: { color: "#1d4ed8", width: 3 },
+      fill: "toself",
+      fillcolor: "rgba(29, 78, 216, 0.18)",
+      hoverWidthMm: xRadius + 0.16,
+    };
+  }
+
+  return null;
+}
+
+
 export function buildElementPlotTraces(plot, yMax) {
   const traces = [];
   const annotations = [];
+  const targets = [];
   const axisSpanMm = plotXSpan(plot);
   const referenceRocMm = referenceCurvedSurfaceRocMm(plot);
   for (const item of plot.elements || []) {
     const topY = 0.93 * yMax;
     const labelY = 1.02 * yMax;
-    if (item.kind === "plane_surface") {
-      const y = linspace(-topY, topY, 2);
-      const x = y.map(() => item.position_mm);
+    const geometry = elementGeometry(item, topY, axisSpanMm, referenceRocMm);
+    if (geometry) {
       traces.push({
-        x,
-        y,
+        x: geometry.x,
+        y: geometry.y,
         type: "scatter",
         mode: "lines",
         hoverinfo: "skip",
-        line: { color: "#334155", width: 3 },
+        line: geometry.line,
+        fill: geometry.fill,
+        fillcolor: geometry.fillcolor,
         showlegend: false,
       });
-    } else if (item.kind === "curved_surface") {
-      const y = linspace(-topY, topY, 180);
-      const normalized = y.map((value) => value / topY);
-      const visualDepthMm = curvedSurfaceDepthMm(item.radius_mm, referenceRocMm, axisSpanMm);
-      const x = normalized.map((value) =>
-        item.position_mm + Math.sign(item.radius_mm || 1) * visualDepthMm * value * value
-      );
-      traces.push({
-        x,
-        y,
-        type: "scatter",
-        mode: "lines",
-        hoverinfo: "skip",
-        line: { color: "#334155", width: 3 },
-        showlegend: false,
-      });
-    } else if (item.kind === "lens") {
-      const theta = linspace(0, 2 * Math.PI, 180);
-      const xRadius = 0.42;
-      const yRadius = topY * 0.9;
-      traces.push({
-        x: theta.map((value) => item.position_mm + xRadius * Math.cos(value)),
-        y: theta.map((value) => yRadius * Math.sin(value)),
-        type: "scatter",
-        mode: "lines",
-        hoverinfo: "skip",
-        line: { color: "#1d4ed8", width: 3 },
-        fill: "toself",
-        fillcolor: "rgba(29, 78, 216, 0.18)",
-        showlegend: false,
+      targets.push({
+        elementId: item.id,
+        minX: Math.min(...geometry.x) - geometry.hoverWidthMm,
+        maxX: Math.max(...geometry.x) + geometry.hoverWidthMm,
       });
     }
     annotations.push({
@@ -266,7 +289,7 @@ export function buildElementPlotTraces(plot, yMax) {
       font: { size: 13, color: "#334155" },
     });
   }
-  return { traces, annotations };
+  return { traces, annotations, targets };
 }
 
 
@@ -346,7 +369,7 @@ export function createOpticalAxisController({
       id: nextUniqueId(kind, state.elements),
       kind,
       label: `${labels[kind] || "Element"} ${count}`,
-      reflection: kind === "curved_surface" ? 0.95 : 0.0,
+      reflection: kind === "curved_surface" ? 0.95 : (kind === "plane_surface" ? 1.0 : 0.0),
     };
     if (kind === "curved_surface") base.radius_mm = 50.0;
     if (kind === "lens") base.focal_length_mm = 50.0;
@@ -870,7 +893,7 @@ function defaultPlotReadout(plot, result) {
   if (plot.segments && plot.segments.length) {
     return {
       title: "Move across the plot",
-      body: "A vertical cursor will follow your mouse anywhere inside the plotting area. The active interval will show its local mode as a solid segment, with dashed continuation outside that interval and a waist marker when visible.",
+      body: "A vertical cursor will follow your mouse anywhere inside the plotting area. Hover near an optical element to highlight it, or move through an interval to inspect its local mode, dashed continuation, and waist location.",
     };
   }
   if (result && result.error) {
@@ -984,6 +1007,45 @@ function buildCursorOnlyReadout(xValue) {
 }
 
 
+function findHoveredElement(plot, xValue) {
+  const targets = plot.element_targets || [];
+  if (!targets.length) {
+    return null;
+  }
+  const activeTargets = targets.filter((target) => xValue >= target.minX && xValue <= target.maxX);
+  if (!activeTargets.length) {
+    return null;
+  }
+  const bestTarget = activeTargets.reduce((best, candidate) => {
+    const bestDistance = Math.abs(xValue - 0.5 * (best.minX + best.maxX));
+    const candidateDistance = Math.abs(xValue - 0.5 * (candidate.minX + candidate.maxX));
+    return candidateDistance < bestDistance ? candidate : best;
+  });
+  return (plot.elements || []).find((item) => item.id === bestTarget.elementId) || null;
+}
+
+
+function buildElementReadout(item) {
+  const lines = [
+    `x = <strong>${formatNumber(item.position_mm, 3)} mm</strong>`,
+    `R = <strong>${formatNumber(item.reflection, 3)}</strong>`,
+    `T = <strong>${formatNumber(item.transmission, 3)}</strong>`,
+  ];
+  if (item.kind === "curved_surface") {
+    lines.splice(1, 0, `ROC = <strong>${formatNumber(item.radius_mm, 3)} mm</strong>`);
+  } else if (item.kind === "lens") {
+    lines.splice(1, 0, `f = <strong>${formatNumber(item.focal_length_mm, 3)} mm</strong>`);
+  }
+  if (item.is_endpoint) {
+    lines.push("<strong>Selected as cavity endpoint</strong>");
+  }
+  return {
+    title: `${item.label} · ${item.kind_title}`,
+    body: lines.join("<br>"),
+  };
+}
+
+
 function buildBaseShapes(plot) {
   return [
     {
@@ -1051,6 +1113,7 @@ export function createOpticalAxisUi({
 
   let plotTraceMeta = [];
   let currentHoverSegmentId = null;
+  let currentHoverElementId = null;
   let plotPointerMoveHandler = null;
   let plotPointerLeaveHandler = null;
   let activeModeOverlayIndices = null;
@@ -1193,6 +1256,37 @@ export function createOpticalAxisUi({
     });
   }
 
+  function restyleElementTraces(plotHost, elementId = null) {
+    if (!plotTraceMeta.length) {
+      return;
+    }
+    const elementIndices = [];
+    const lineColors = [];
+    const lineWidths = [];
+    const fillColors = [];
+    plotTraceMeta.forEach((meta, index) => {
+      if (meta.kind !== "element") {
+        return;
+      }
+      elementIndices.push(index);
+      lineColors.push(meta.elementId === elementId ? "#b34700" : meta.baseLineColor);
+      lineWidths.push(meta.elementId === elementId ? meta.baseWidth + 1.6 : meta.baseWidth);
+      fillColors.push(
+        meta.elementId === elementId && meta.baseFillColor
+          ? "rgba(180, 71, 0, 0.24)"
+          : (meta.baseFillColor || null),
+      );
+    });
+    if (!elementIndices.length) {
+      return;
+    }
+    Plotly.restyle(plotHost, {
+      "line.color": lineColors,
+      "line.width": lineWidths,
+      fillcolor: fillColors,
+    }, elementIndices);
+  }
+
   function getPlotPointerState(plotHost, event) {
     if (!(plotHost && plotHost._fullLayout && plotHost._fullLayout.xaxis && plotHost._fullLayout.yaxis)) {
       return null;
@@ -1211,16 +1305,21 @@ export function createOpticalAxisUi({
   }
 
   function applyPlotCursor(plotHost, readoutHost, plot, xValue) {
-    if (!(plot.segments && plot.segments.length)) {
-      return;
-    }
+    const hoveredElement = findHoveredElement(plot, xValue);
+    currentHoverElementId = hoveredElement ? hoveredElement.id : null;
+    restyleElementTraces(plotHost, currentHoverElementId);
 
-    const segment = findSegmentAtX(plot, xValue, currentHoverSegmentId);
+    const segment = hoveredElement ? null : findSegmentAtX(plot, xValue, currentHoverSegmentId);
     const activeSegmentId = segment ? segment.id : null;
     currentHoverSegmentId = activeSegmentId;
     restyleBeamTraces(plotHost, activeSegmentId);
     updateActiveModeOverlay(plotHost, plot, segment);
-    setPlotReadout(readoutHost, segment ? buildHoverReadout(segment, xValue) : buildCursorOnlyReadout(xValue));
+    setPlotReadout(
+      readoutHost,
+      hoveredElement
+        ? buildElementReadout(hoveredElement)
+        : (segment ? buildHoverReadout(segment, xValue) : buildCursorOnlyReadout(xValue)),
+    );
     Plotly.relayout(plotHost, {
       shapes: [
         ...buildBaseShapes(plot),
@@ -1238,7 +1337,9 @@ export function createOpticalAxisUi({
 
   function clearPlotHover(plotHost, readoutHost, plot, result) {
     currentHoverSegmentId = null;
+    currentHoverElementId = null;
     restyleBeamTraces(plotHost, null);
+    restyleElementTraces(plotHost, null);
     updateActiveModeOverlay(plotHost, plot, null);
     setPlotReadout(readoutHost, defaultPlotReadout(plot, result));
     Plotly.relayout(plotHost, {
@@ -1264,6 +1365,7 @@ export function createOpticalAxisUi({
     clearTransientState() {
       axisController.clearEditor();
       currentHoverSegmentId = null;
+      currentHoverElementId = null;
       plotTraceMeta = [];
       activeModeOverlayIndices = null;
       detachPlotListeners();
@@ -1295,6 +1397,7 @@ export function createOpticalAxisUi({
       activePlotHost = plotHost;
       detachPlotListeners();
       currentHoverSegmentId = null;
+      currentHoverElementId = null;
 
       if (plot.segments && plot.segments.length) {
         const legendSeen = new Set();
@@ -1475,10 +1578,19 @@ export function createOpticalAxisUi({
       }
 
       const elementPlot = buildElementPlotTraces(plot, yMax);
-      for (const trace of elementPlot.traces) {
+      plot.element_targets = elementPlot.targets || [];
+      elementPlot.traces.forEach((trace, index) => {
         traces.push(trace);
-        traceMeta.push({ kind: "decoration", segmentId: null, baseDash: "solid", baseWidth: 3 });
-      }
+        traceMeta.push({
+          kind: "element",
+          elementId: (plot.elements || [])[index]?.id || null,
+          segmentId: null,
+          baseDash: "solid",
+          baseWidth: trace.line?.width || 3,
+          baseLineColor: trace.line?.color || "#334155",
+          baseFillColor: trace.fillcolor || null,
+        });
+      });
 
       if (plot.waist_marker) {
         traces.push({
@@ -1538,7 +1650,7 @@ export function createOpticalAxisUi({
         applyPlotCursor(plotHost, readoutHost, plot, pointerState.xValue);
       };
       plotPointerLeaveHandler = () => {
-        if (!(plot.segments && plot.segments.length)) {
+        if (!(plot.segments && plot.segments.length) && !(plot.elements && plot.elements.length)) {
           return;
         }
         clearPlotHover(plotHost, readoutHost, plot, result);
