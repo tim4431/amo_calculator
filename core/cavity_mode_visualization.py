@@ -9,8 +9,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Polygon
 
-from core.cavity_mode import CavityModeSolution, ElementReference
-from core.gaussian_beam import GaussianBeam
+from .cavity_mode import CavityModeSolution, ElementReference
+from .gaussian_beam import GaussianBeam
 
 
 @dataclass(frozen=True)

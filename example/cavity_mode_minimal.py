@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
 
 
 from core.cavity_mode import OpticalAxis
-from src.cavity_mode_visualization import ElementDrawSpec, plot_cavity_mode
+from core.cavity_mode_visualization import ElementDrawSpec, plot_cavity_mode
 
 
 def main() -> None:

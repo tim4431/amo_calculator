@@ -15,8 +15,9 @@ the atom's natural linewidth Γ.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from scipy.constants import c as SPEED_OF_LIGHT
@@ -98,30 +99,18 @@ class RateEquationSolver:
         self.lasers: List[Laser] = []
         self._gamma = self._compute_decay_matrix()
 
-    def _pair_dipole_squared(self, i: int, j: int) -> float:
-        """Σ_q |⟨i|e r_q|j⟩|^2 using whichever ordering the user populated."""
-        total = 0.0
-        for q in (-1, 0, 1):
-            total += abs(self.dipole[q][i, j]) ** 2 + abs(self.dipole[q][j, i]) ** 2
-        return total
-
     def _compute_decay_matrix(self) -> np.ndarray:
         """``gamma[i, j]`` = spontaneous decay rate from level i to level j (s^-1).
 
         Nonzero only when ``E_i > E_j``.
         """
-        gamma = np.zeros((self.N, self.N))
-        prefactor = 1.0 / (3 * np.pi * EPS0 * HBAR * SPEED_OF_LIGHT ** 3)
-        for i in range(self.N):
-            for j in range(self.N):
-                if self.energies_Hz[i] <= self.energies_Hz[j]:
-                    continue
-                omega = 2 * np.pi * (self.energies_Hz[i] - self.energies_Hz[j])
-                d2 = self._pair_dipole_squared(i, j)
-                if d2 == 0.0:
-                    continue
-                gamma[i, j] = prefactor * omega ** 3 * d2
-        return gamma
+        E = self.energies_Hz
+        omega = np.maximum(2 * np.pi * (E[:, None] - E[None, :]), 0.0)
+        d2 = sum(
+            np.abs(self.dipole[q]) ** 2 + np.abs(self.dipole[q].T) ** 2
+            for q in (-1, 0, 1)
+        )
+        return omega**3 * d2 / (3 * np.pi * EPS0 * HBAR * SPEED_OF_LIGHT**3)
 
     def total_decay(self) -> np.ndarray:
         """Total spontaneous decay rate out of each level (s^-1)."""
@@ -136,53 +125,34 @@ class RateEquationSolver:
 
     def build_rate_matrix(self) -> np.ndarray:
         """Build the N×N transition-rate matrix A with dN/dt = A N."""
-        A = np.zeros((self.N, self.N))
+        # Spontaneous: A[j,i]=γ_ij (gain into j), A[i,i]=−Σ_j γ_ij (loss out of i).
+        gamma_total = self._gamma.sum(axis=1)
+        A = self._gamma.T - np.diag(gamma_total)
 
-        # Spontaneous decay: j gains population from i, i loses it.
-        for i in range(self.N):
-            for j in range(self.N):
-                g_ij = self._gamma[i, j]
-                if g_ij > 0:
-                    A[j, i] += g_ij
-                    A[i, i] -= g_ij
-
-        gamma_total = self.total_decay()
-
-        # Stimulated (absorption + stimulated emission).
+        # Stimulated (absorption + stimulated emission). Loop only over pairs
+        # that have spontaneous coupling — other pairs contribute zero anyway.
         for laser in self.lasers:
             E_amp = np.sqrt(2 * laser.intensity_W_m2 / (EPS0 * SPEED_OF_LIGHT))
-            for i in range(self.N):
-                for j in range(i + 1, self.N):
-                    if self.energies_Hz[i] == self.energies_Hz[j]:
+            for e, g in np.argwhere(self._gamma > 0):
+                Gamma_e = gamma_total[e]
+                omega_eg = 2 * np.pi * (self.energies_Hz[e] - self.energies_Hz[g])
+                detuning = 2 * np.pi * laser.frequency_Hz - omega_eg  # rad/s
+                Omega2 = 0.0
+                for q, eq in laser.polarization.items():
+                    if q not in (-1, 0, 1) or eq == 0:
                         continue
-                    if self.energies_Hz[j] > self.energies_Hz[i]:
-                        e, g = j, i
-                    else:
-                        e, g = i, j
-                    Gamma_e = gamma_total[e]
-                    if Gamma_e <= 0:
+                    # <e|e r_q|g> — accept whichever ordering the user filled.
+                    d_eg = self.dipole[q][e, g] or np.conj(self.dipole[-q][g, e])
+                    if d_eg == 0:
                         continue
-                    omega_eg = 2 * np.pi * (self.energies_Hz[e] - self.energies_Hz[g])
-                    detuning = 2 * np.pi * laser.frequency_Hz - omega_eg  # rad/s
-                    Omega2 = 0.0
-                    for q, eq in laser.polarization.items():
-                        if q not in (-1, 0, 1) or eq == 0:
-                            continue
-                        # <e|e r_q|g> (grab whichever ordering the user filled)
-                        d_eg = self.dipole[q][e, g]
-                        if d_eg == 0:
-                            d_eg = np.conj(self.dipole[-q][g, e]) if -q in self.dipole else 0.0
-                        if d_eg == 0:
-                            continue
-                        Omega_q = d_eg * eq * E_amp / HBAR
-                        Omega2 += abs(Omega_q) ** 2
-                    if Omega2 == 0.0:
-                        continue
-                    R = Omega2 * (Gamma_e / 2) / (detuning ** 2 + (Gamma_e / 2) ** 2)
-                    A[e, g] += R
-                    A[g, g] -= R
-                    A[g, e] += R
-                    A[e, e] -= R
+                    Omega2 += abs(d_eg * eq * E_amp / HBAR) ** 2
+                if Omega2 == 0.0:
+                    continue
+                R = Omega2 * (Gamma_e / 2) / (detuning**2 + (Gamma_e / 2) ** 2)
+                A[e, g] += R
+                A[g, g] -= R
+                A[g, e] += R
+                A[e, e] -= R
         return A
 
     def solve(
@@ -216,18 +186,71 @@ class RateEquationSolver:
             atol=atol,
         )
 
-    def steady_state(self) -> np.ndarray:
-        """Return the steady-state populations (sums to 1).
+    def steady_state(self, null_tol: float = 1e-9) -> np.ndarray:
+        """Steady-state populations via SVD null-space of the rate matrix.
 
-        Computed as the null space of ``A`` augmented with the
-        conservation constraint Σ N = 1.
+        Population conservation guarantees one zero singular value of A, so
+        the null space is at least 1-D. When it is exactly 1-D (no dark
+        states) the result is unique. If the null space has dimension >1,
+        a warning is emitted — the steady state then depends on initial
+        conditions, and the returned vector is just the smallest-singular-
+        value direction as a representative.
+
+        ``null_tol`` is the relative threshold (vs σ_max) used to count
+        singular values as zero.
         """
         A = self.build_rate_matrix()
-        M = np.vstack([A, np.ones(self.N)])
-        rhs = np.zeros(self.N + 1)
-        rhs[-1] = 1.0
-        N_ss, *_ = np.linalg.lstsq(M, rhs, rcond=None)
-        return N_ss
+        _, S, Vt = np.linalg.svd(A)
+        S_max = S.max() if len(S) else 1.0
+        n_null = int(np.sum(S < null_tol * S_max)) if S_max > 0 else self.N
+        if n_null > 1:
+            warnings.warn(
+                f"Rate matrix has {n_null}-dimensional null space — steady "
+                "state is not unique (dark states present).",
+                stacklevel=2,
+            )
+        v = Vt[-1].real
+        s = v.sum()
+        if s == 0:
+            raise ValueError(
+                "Null-space vector has zero sum; no normalizable steady state."
+            )
+        return v / s
+
+    def photon_scattering_rate(self, N: np.ndarray) -> float:
+        """Total photon-scattering rate R = Σ_i Γ_i · N_i (photons · s⁻¹ / atom).
+
+        ``Γ_i`` is the total spontaneous decay rate out of level i (zero for
+        ground sublevels, Γ for excited sublevels in the cycling regime).
+        Pass any population vector; for the steady-state value use
+        ``solver.photon_scattering_rate(solver.steady_state())``.
+        """
+        return float(np.sum(self._gamma.sum(axis=1) * np.asarray(N)))
+
+    def sweep_steady_state(
+        self,
+        param_setter: Callable[[Any], None],
+        values: Sequence[Any],
+        observable: Optional[Callable[[np.ndarray], Any]] = None,
+    ) -> np.ndarray:
+        """Scan a parameter and record a steady-state observable at each point.
+
+        ``param_setter(v)`` mutates the solver or one of its lasers before
+        each solve, e.g. ``lambda d: setattr(pump, 'frequency_Hz', f0 + d)``.
+        ``observable(N_ss)`` extracts the quantity to record (scattering
+        rate, a subset of populations, ...); if omitted, the full
+        population vector is collected. The leading axis of the returned
+        array is ``len(values)``.
+
+        Note: this method mutates the solver through ``param_setter``.
+        Callers that need the original state should save/restore it.
+        """
+        out = []
+        for v in values:
+            param_setter(v)
+            N = self.steady_state()
+            out.append(np.asarray(observable(N) if observable else N))
+        return np.array(out)
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +274,11 @@ class LevelGroup:
     ``energy_Hz`` is the manifold centroid (with no Zeeman shift).
     ``mF_energies_Hz`` holds the per-mF energy (centroid + Zeeman shift),
     parallel to ``mF_values`` and ``level_indices``.
+
+    ``n``, ``l``, ``j`` record the fine-structure state that owns this
+    manifold. :func:`build_hfs_levels` fills them in; downstream helpers
+    like :func:`build_dipole_matrix` can then be called without restating
+    the quantum numbers.
     """
 
     label: str
@@ -261,20 +289,10 @@ class LevelGroup:
     mF_values: List[float] = field(default_factory=list)
     mF_energies_Hz: List[float] = field(default_factory=list)
     g_F: float = 0.0
-
-
-def lande_gj(L: int, J: float, S: float = 0.5) -> float:
-    """Fine-structure Landé factor g_J (ignoring relativistic/anomalous corrections)."""
-    if J == 0:
-        return 0.0
-    return 1.0 + (J * (J + 1) + S * (S + 1) - L * (L + 1)) / (2 * J * (J + 1))
-
-
-def lande_gf(F: float, J: float, I: float, g_j: float) -> float:
-    """Hyperfine Landé factor g_F (neglecting the nuclear g_I contribution)."""
-    if F == 0:
-        return 0.0
-    return g_j * (F * (F + 1) + J * (J + 1) - I * (I + 1)) / (2 * F * (F + 1))
+    n: Optional[int] = None
+    l: Optional[int] = None
+    j: Optional[float] = None
+    s: float = 0.5
 
 
 def build_hfs_levels(
@@ -300,15 +318,13 @@ def build_hfs_levels(
     per-mF energies in ``mF_energies_Hz`` and the computed ``g_F``.
     """
     A, B_hfs = atom.getHFSCoefficients(n, l, j)
-    I_nuc = atom.I
-    g_j = lande_gj(l, j, s)
     levels: List[Level] = []
     groups: List[LevelGroup] = []
     idx = start_index
     for F in F_values:
         hfs_shift = atom.getHFSEnergyShift(j, F, A, B_hfs, s=s)
         E_centroid = zero_energy_Hz + hfs_shift
-        g_f = lande_gf(F, j, I_nuc, g_j)
+        g_f = atom.getLandegf(l, j, F, s=s)
         mFs = _mf_values(F)
         indices: List[int] = []
         mF_Es: List[float] = []
@@ -319,8 +335,7 @@ def build_hfs_levels(
             indices.append(idx)
             idx += 1
             mF_Es.append(E_level)
-            mF_str = f"{mF:+d}" if isinstance(mF, int) else f"{mF:+.1f}"
-            levels.append(Level(f"{f_label},mF={mF_str}", E_level))
+            levels.append(Level(f"{f_label},mF={mF:+g}", E_level))
         groups.append(
             LevelGroup(
                 label=f_label,
@@ -331,6 +346,7 @@ def build_hfs_levels(
                 mF_values=mFs,
                 mF_energies_Hz=mF_Es,
                 g_F=g_f,
+                n=n, l=l, j=j, s=s,
             )
         )
     return levels, groups
@@ -338,8 +354,8 @@ def build_hfs_levels(
 
 def resonance_frequency(
     groups: Sequence[LevelGroup],
-    ground_F: float,
-    excited_F: float,
+    Fg: float,
+    Fe: float,
     mF_g: float = 0,
     mF_e: float = 0,
     detuning_Hz: float = 0.0,
@@ -350,14 +366,14 @@ def resonance_frequency(
     Defaults ``mF_g = mF_e = 0`` give the mF=0↔mF=0 "reference" transition,
     which coincides with the manifold centroid when there is no B field.
     """
-    gg = next((g for g in groups if g.F == ground_F and not g.is_excited), None)
-    eg = next((g for g in groups if g.F == excited_F and g.is_excited), None)
+    gg = next((g for g in groups if g.F == Fg and not g.is_excited), None)
+    eg = next((g for g in groups if g.F == Fe and g.is_excited), None)
     if gg is None or eg is None:
-        raise ValueError(f"Groups for F={ground_F} / F'={excited_F} not found.")
+        raise ValueError(f"Groups for F={Fg} / F'={Fe} not found.")
     if mF_g not in gg.mF_values:
-        raise ValueError(f"mF={mF_g} not in F={ground_F} (allowed: {gg.mF_values})")
+        raise ValueError(f"mF={mF_g} not in F={Fg} (allowed: {gg.mF_values})")
     if mF_e not in eg.mF_values:
-        raise ValueError(f"mF={mF_e} not in F'={excited_F} (allowed: {eg.mF_values})")
+        raise ValueError(f"mF={mF_e} not in F'={Fe} (allowed: {eg.mF_values})")
     Eg = gg.mF_energies_Hz[gg.mF_values.index(mF_g)]
     Ee = eg.mF_energies_Hz[eg.mF_values.index(mF_e)]
     return Ee - Eg + detuning_Hz
@@ -365,21 +381,17 @@ def resonance_frequency(
 
 def build_dipole_matrix(
     atom: Any,
-    ground: Tuple[int, int, float],
-    excited: Tuple[int, int, float],
     groups: Sequence[LevelGroup],
     n_levels: Optional[int] = None,
 ) -> Dict[int, np.ndarray]:
-    """Build ``dipole[q][e, g]`` for a two-manifold fine-structure transition.
+    """Build ``dipole[q][e, g]`` for every ground-manifold ↔ excited-manifold pair.
 
-    ``groups`` must contain both ground (``is_excited=False``) and excited
-    (``is_excited=True``) :class:`LevelGroup` objects. The helper calls
-    ARC's ``getDipoleMatrixElementHFS`` with state 1 = ground and state 2 =
-    excited so that ARC's internal sign convention lines up with our
-    ``q = m_excited - m_ground``.
+    Each :class:`LevelGroup` carries its own ``(n, l, j)``, so the fine-structure
+    quantum numbers are read directly from the groups — no need to restate them
+    here. Ground/excited manifolds are identified by the ``is_excited`` flag.
+    ARC's ``getDipoleMatrixElementHFS`` is called with state 1 = ground and
+    state 2 = excited so that the sign convention matches ``q = m_e - m_g``.
     """
-    gn, gl, gj = ground
-    en, el, ej = excited
     if n_levels is None:
         n_levels = max(max(g.level_indices) for g in groups) + 1
     dipole = {q: np.zeros((n_levels, n_levels), dtype=complex) for q in (-1, 0, 1)}
@@ -387,15 +399,20 @@ def build_dipole_matrix(
     excited_groups = [g for g in groups if g.is_excited]
     for gg in ground_groups:
         for eg in excited_groups:
+            if None in (gg.n, gg.l, gg.j, eg.n, eg.l, eg.j):
+                raise ValueError(
+                    f"LevelGroup {gg.label!r}/{eg.label!r} missing (n,l,j) — "
+                    "build groups via build_hfs_levels() or set them manually."
+                )
             for mFg, ig in zip(gg.mF_values, gg.level_indices):
                 for mFe, ie in zip(eg.mF_values, eg.level_indices):
                     q = int(round(mFe - mFg))
                     if q not in (-1, 0, 1):
                         continue
                     d_ea0 = atom.getDipoleMatrixElementHFS(
-                        gn, gl, gj, gg.F, mFg,
-                        en, el, ej, eg.F, mFe,
-                        q,
+                        gg.n, gg.l, gg.j, gg.F, mFg,
+                        eg.n, eg.l, eg.j, eg.F, mFe,
+                        q, s=gg.s,
                     )
                     dipole[q][ie, ig] = d_ea0 * E_CHARGE * BOHR_RADIUS
     return dipole
@@ -430,9 +447,7 @@ def initial_state_pumped(
             if mFv == mF:
                 N0[i] = total
                 return N0
-    raise ValueError(
-        f"(F={F}, mF={mF}, is_excited={is_excited}) not found in groups"
-    )
+    raise ValueError(f"(F={F}, mF={mF}, is_excited={is_excited}) not found in groups")
 
 
 def initial_state_mot(
@@ -457,217 +472,3 @@ def initial_state_mot(
     raise ValueError(f"F={F} manifold (is_excited={is_excited}) not found in groups")
 
 
-# ---------------------------------------------------------------------------
-# Visualization
-# ---------------------------------------------------------------------------
-
-
-_POL_NAME = {-1: "σ⁻", 0: "π", +1: "σ⁺"}
-
-_DEFAULT_GROUP_CMAPS = [
-    "Blues", "Oranges", "Greens", "Reds", "Purples", "YlOrBr", "PuRd",
-]
-
-
-def level_colors(
-    groups: Sequence[LevelGroup],
-    cmaps: Optional[Sequence[str]] = None,
-    t_range: Tuple[float, float] = (0.35, 0.9),
-) -> Dict[int, Any]:
-    """Return ``{level_index: rgba}`` — one color per sublevel.
-
-    Each group is assigned a matplotlib colormap (cycled from ``cmaps``);
-    within the group, mF sublevels sample the colormap linearly over
-    ``t_range``. The same mapping can be passed into :func:`plot_level_diagram`
-    (``level_color_map``) and :func:`plot_populations` (``colors``) to keep
-    the level diagram and dynamics plot visually consistent.
-    """
-    import matplotlib.pyplot as plt
-
-    cmaps = list(cmaps) if cmaps is not None else _DEFAULT_GROUP_CMAPS
-    t_lo, t_hi = t_range
-    colors: Dict[int, Any] = {}
-    for gi, g in enumerate(groups):
-        cmap = plt.get_cmap(cmaps[gi % len(cmaps)])
-        n = len(g.level_indices)
-        for i, idx in enumerate(g.level_indices):
-            t = t_lo + (t_hi - t_lo) * (i / max(n - 1, 1)) if n > 1 else 0.5 * (t_lo + t_hi)
-            colors[idx] = cmap(t)
-    return colors
-
-
-def plot_level_diagram(
-    ax,
-    groups: Sequence[LevelGroup],
-    lasers: Optional[Sequence[Laser]] = None,
-    laser_pairs: Optional[Sequence[Tuple[str, str]]] = None,
-    ground_y: Tuple[float, float] = (0.0, 1.0),
-    excited_y: Tuple[float, float] = (3.0, 4.0),
-    level_half_width: float = 0.4,
-    level_color_map: Optional[Dict[int, Any]] = None,
-    laser_colors: Optional[Sequence[str]] = None,
-    zeeman_band: float = 0.15,
-) -> None:
-    """Draw a schematic level diagram (not to scale) on ``ax``.
-
-    Each F manifold is a row of horizontal segments, one per mF, at x = mF.
-    Ground and excited manifolds are stacked into two zones whose HFS
-    splittings are scaled into ``ground_y`` / ``excited_y``; within each
-    manifold, mF sublevels are spread vertically proportional to the Zeeman
-    shift, normalized so that the largest |ΔE_Zeeman| across all groups
-    spans ``zeeman_band`` y-units (set to 0 to disable the spread).
-
-    ``level_color_map`` (from :func:`level_colors`) colors each sublevel.
-    ``laser_colors`` colors the arrow per laser (default: matplotlib cycle).
-    """
-    import matplotlib.pyplot as plt
-
-    ground_groups = [g for g in groups if not g.is_excited]
-    excited_groups = [g for g in groups if g.is_excited]
-
-    def _y_positions(grps: List[LevelGroup], y_lo: float, y_hi: float) -> Dict[int, float]:
-        if not grps:
-            return {}
-        if len(grps) == 1:
-            return {id(grps[0]): 0.5 * (y_lo + y_hi)}
-        es = np.array([g.energy_Hz for g in grps])
-        span = es.max() - es.min()
-        if span == 0:
-            return {id(g): 0.5 * (y_lo + y_hi) for g in grps}
-        return {id(g): y_lo + (g.energy_Hz - es.min()) / span * (y_hi - y_lo) for g in grps}
-
-    y_map: Dict[int, float] = {}
-    y_map.update(_y_positions(ground_groups, *ground_y))
-    y_map.update(_y_positions(excited_groups, *excited_y))
-
-    # Global Zeeman-shift normalization
-    max_abs_shift = 0.0
-    for g in groups:
-        for E in g.mF_energies_Hz:
-            max_abs_shift = max(max_abs_shift, abs(E - g.energy_Hz))
-    zeeman_scale = (zeeman_band / max_abs_shift) if max_abs_shift > 0 else 0.0
-
-    all_mF = [mF for g in groups for mF in g.mF_values]
-    mF_min, mF_max = int(min(all_mF)), int(max(all_mF))
-    x_min, x_max = mF_min - 1, mF_max + 1.5
-
-    for g in groups:
-        y_center = y_map[id(g)]
-        for mF, idx, E in zip(g.mF_values, g.level_indices, g.mF_energies_Hz):
-            y = y_center + (E - g.energy_Hz) * zeeman_scale
-            c = level_color_map[idx] if level_color_map is not None else "black"
-            ax.hlines(y, mF - level_half_width, mF + level_half_width,
-                      colors=[c], linewidth=2.0)
-        ax.text(x_max + 0.1, y_center, g.label, va="center", fontsize=10)
-
-    gap_y = 0.5 * (max(ground_y[1], 0) + min(excited_y[0], excited_y[1]))
-    ax.axhline(gap_y, color="gray", linestyle=":", linewidth=1, alpha=0.5)
-
-    if lasers:
-        if laser_colors is None:
-            laser_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-        for i, laser in enumerate(lasers):
-            if laser_pairs is not None:
-                g_label, e_label = laser_pairs[i]
-                g_grp = next(g for g in ground_groups if g.label == g_label)
-                e_grp = next(g for g in excited_groups if g.label == e_label)
-            else:
-                g_grp, e_grp = _match_laser(laser, ground_groups, excited_groups)
-            y_g = y_map[id(g_grp)]
-            y_e = y_map[id(e_grp)]
-            c = laser_colors[i % len(laser_colors)]
-            mF_c = float(np.mean(g_grp.mF_values))
-            q_components = [q for q, eq in laser.polarization.items() if abs(eq) > 0]
-            for q in q_components:
-                ax.annotate(
-                    "",
-                    xy=(mF_c + q, y_e),
-                    xytext=(mF_c, y_g),
-                    arrowprops=dict(arrowstyle="->", color=c, lw=1.8, alpha=0.85),
-                )
-            pol_str = ", ".join(_POL_NAME[q] for q in q_components)
-            ax.text(
-                mF_c + max(q_components, default=0) + 0.1,
-                0.5 * (y_g + y_e),
-                f"{laser.label} ({pol_str})",
-                color=c, fontsize=9, ha="left", va="center",
-            )
-
-    ax.set_xlabel("$m_F$")
-    ax.set_xticks(list(range(mF_min, mF_max + 1)))
-    ax.set_yticks([])
-    ax.set_xlim(x_min, x_max + 1.5)
-    ax.set_ylim(
-        min(ground_y[0], excited_y[0]) - 0.5,
-        max(ground_y[1], excited_y[1]) + 0.5,
-    )
-    ax.spines[["top", "right", "left"]].set_visible(False)
-    ax.tick_params(which="both", top=False, right=False, left=False, labelleft=False)
-
-
-def _match_laser(
-    laser: Laser, grounds: List[LevelGroup], excited: List[LevelGroup]
-) -> Tuple[LevelGroup, LevelGroup]:
-    best: Optional[Tuple[LevelGroup, LevelGroup]] = None
-    best_err = np.inf
-    for gg in grounds:
-        for eg in excited:
-            err = abs(eg.energy_Hz - gg.energy_Hz - laser.frequency_Hz)
-            if err < best_err:
-                best_err = err
-                best = (gg, eg)
-    if best is None:
-        raise ValueError("Cannot infer laser pair: no ground/excited groups.")
-    return best
-
-
-def plot_populations(
-    ax,
-    t: np.ndarray,
-    populations: Union[np.ndarray, Dict[str, np.ndarray]],
-    labels: Optional[Sequence[str]] = None,
-    colors: Optional[Union[Sequence, Dict[str, Any]]] = None,
-    t_unit: str = "us",
-    **kwargs,
-) -> None:
-    """Plot population trajectories on ``ax``.
-
-    ``populations`` is either a ``(N_levels, T)`` array (pair with
-    ``labels``) or a dict ``{label: trajectory}`` (pre-aggregated traces).
-    ``colors`` is either a list parallel to labels/rows, or a dict keyed by
-    label. Combine with :func:`level_colors` to match the level diagram.
-    """
-    scales = {"s": 1.0, "ms": 1e3, "us": 1e6, "ns": 1e9}
-    if t_unit not in scales:
-        raise ValueError(f"t_unit must be one of {list(scales)}")
-    ts = np.asarray(t) * scales[t_unit]
-
-    def _color(i: int, lbl: str):
-        if colors is None:
-            return None
-        if isinstance(colors, dict):
-            return colors.get(lbl)
-        return colors[i] if i < len(colors) else None
-
-    if isinstance(populations, dict):
-        for i, (lbl, pop) in enumerate(populations.items()):
-            ax.plot(ts, pop, label=lbl, color=_color(i, lbl), **kwargs)
-    else:
-        pops = np.asarray(populations)
-        if pops.ndim == 1:
-            pops = pops[np.newaxis, :]
-        for i, pop in enumerate(pops):
-            lbl = labels[i] if labels is not None else f"level {i}"
-            ax.plot(ts, pop, label=lbl, color=_color(i, lbl), **kwargs)
-    ax.set_xlabel(f"t ({t_unit})")
-    ax.set_ylabel("population")
-
-
-def aggregate_by_group(
-    populations: np.ndarray, groups: Sequence[LevelGroup]
-) -> Dict[str, np.ndarray]:
-    """Return ``{group.label: Σ_{mF} N(t)}`` for each group."""
-    out: Dict[str, np.ndarray] = {}
-    for g in groups:
-        out[g.label] = populations[g.level_indices, :].sum(axis=0)
-    return out
